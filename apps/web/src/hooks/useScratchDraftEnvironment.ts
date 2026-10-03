@@ -1,18 +1,24 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import { type EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { resolveEnvironmentMachineKind, type EnvironmentId } from "@t3tools/contracts";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { type DraftId, useComposerDraftStore } from "../composerDraftStore";
 import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import { type EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useClientSettings } from "./useSettings";
 import { useScratchProject } from "./useScratchProject";
 
+/**
+ * Moves a draft without a project to another machine's Scratch project,
+ * creating it there first if needed. The draft keeps its composer session,
+ * so the prompt and model/mode selections carry over.
+ */
 export function useScratchDraftEnvironment({
   draftId,
   activeProject,
@@ -26,20 +32,18 @@ export function useScratchDraftEnvironment({
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const settings = useClientSettings(selectProjectGroupingSettings);
   const { openScratchProject } = useScratchProject();
-  const isScratchDraft = Boolean(
-    draftId &&
-    activeProject &&
-    isScratchProject(
-      activeProject,
-      environments.find((env) => env.environmentId === activeProject.environmentId)?.serverConfig
-        ?.scratchWorkspaceRoot,
-    ),
+  const activeEnvironment = environments.find(
+    (env) => env.environmentId === activeProject?.environmentId,
   );
+  const isScratchDraft =
+    draftId !== null &&
+    activeProject !== null &&
+    isScratchProject(activeProject, activeEnvironment?.serverConfig?.scratchWorkspaceRoot);
   const availableEnvironments = useMemo(
     () =>
       environments
         .filter(
-          (env) => env.connection.phase === "connected" && env.serverConfig?.scratchWorkspaceRoot,
+          (env) => availableScratchWorkspaceRoot(env.connection.phase, env.serverConfig) !== null,
         )
         .map((env) => ({
           environmentId: env.environmentId,
@@ -52,44 +56,36 @@ export function useScratchDraftEnvironment({
         ),
     [environments, primaryEnvironmentId],
   );
-  const sourceKey = `${draftId}:${activeProject?.environmentId}:${activeProject?.id}`;
-  const requestRef = useRef<{ environmentId: EnvironmentId; sourceKey: string } | null>(null);
-  const [pendingRequest, setPendingRequest] = useState<typeof requestRef.current>(null);
-  const pending = pendingRequest?.sourceKey === sourceKey;
-  useLayoutEffect(
-    () => () => {
-      if (requestRef.current?.sourceKey === sourceKey) requestRef.current = null;
-      setPendingRequest((current) => (current?.sourceKey === sourceKey ? null : current));
-    },
-    [sourceKey],
-  );
+  // The latest switch wins: a slower, earlier one must not retarget the draft.
+  const latestRequestRef = useRef<object | null>(null);
+  const [pending, setPending] = useState(false);
 
   const selectEnvironment = useCallback(
     async (environmentId: EnvironmentId) => {
       if (!isScratchDraft || !draftId || !activeProject || !canSwitch()) return;
-      if (!availableEnvironments.some((env) => env.environmentId === environmentId)) return;
-      const request = { environmentId, sourceKey };
-      requestRef.current = request;
       if (environmentId === activeProject.environmentId) {
-        requestRef.current = null;
-        setPendingRequest(null);
+        // Picking the current machine again cancels a switch still in flight.
+        latestRequestRef.current = null;
+        setPending(false);
         return;
       }
-      setPendingRequest(request);
+      const request = {};
+      latestRequestRef.current = request;
+      setPending(true);
       try {
-        const project = await openScratchProject(environmentId);
-        if (requestRef.current !== request || !project || !canSwitch()) return;
+        const project = await openScratchProject(environmentId, "Could not switch machine");
+        if (latestRequestRef.current !== request || !project || !canSwitch()) return;
         const store = useComposerDraftStore.getState();
         const draft = store.getDraftSession(draftId);
+        // Leave the draft alone if it was sent or moved while this switch ran.
         if (
           !draft ||
           draft.promotedTo ||
           draft.environmentId !== activeProject.environmentId ||
           draft.projectId !== activeProject.id
-        )
+        ) {
           return;
-        // Remap the logical-project index as well as the physical target. The composer
-        // session stays in place, preserving its prompt and model/mode selections.
+        }
         store.setLogicalProjectDraftThreadId(
           deriveLogicalProjectKeyFromSettings(project, settings),
           scopeProjectRef(project.environmentId, project.id),
@@ -101,37 +97,20 @@ export function useScratchDraftEnvironment({
           envMode: "local",
         });
       } finally {
-        if (requestRef.current === request) {
-          requestRef.current = null;
+        if (latestRequestRef.current === request) {
+          latestRequestRef.current = null;
+          setPending(false);
         }
-        setPendingRequest((current) => (current === request ? null : current));
       }
     },
-    [
-      activeProject,
-      availableEnvironments,
-      canSwitch,
-      draftId,
-      isScratchDraft,
-      openScratchProject,
-      settings,
-      sourceKey,
-    ],
+    [activeProject, canSwitch, draftId, isScratchDraft, openScratchProject, settings],
   );
 
-  const cycleEnvironment = useCallback(() => {
-    const currentId = requestRef.current?.environmentId ?? activeProject?.environmentId;
-    const index = availableEnvironments.findIndex((env) => env.environmentId === currentId);
-    const next = availableEnvironments[(index + 1) % availableEnvironments.length];
-    if (next && availableEnvironments.length > 1) void selectEnvironment(next.environmentId);
-  }, [activeProject?.environmentId, availableEnvironments, selectEnvironment]);
-
-  return {
-    isScratchDraft,
-    availableEnvironments,
-    selectEnvironment,
-    cycleEnvironment,
-    pending,
-    requestRef,
-  };
+  // Stable between renders so ChatView's callbacks and effects that depend on
+  // it are not rebuilt on every streamed update.
+  const visiblePending = isScratchDraft && pending;
+  return useMemo(
+    () => ({ isScratchDraft, availableEnvironments, selectEnvironment, pending: visiblePending }),
+    [isScratchDraft, availableEnvironments, selectEnvironment, visiblePending],
+  );
 }

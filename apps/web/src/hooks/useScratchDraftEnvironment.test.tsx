@@ -15,7 +15,8 @@ const state = vi.hoisted(() => ({
 vi.mock("./useScratchProject", () => ({
   useScratchProject: () => ({ openScratchProject: state.open }),
 }));
-vi.mock("./useSettings", () => ({ useClientSettings: () => ({}) }));
+const GROUPING_SETTINGS = {};
+vi.mock("./useSettings", () => ({ useClientSettings: () => GROUPING_SETTINGS }));
 vi.mock("../logicalProject", () => ({
   selectProjectGroupingSettings: vi.fn(),
   deriveLogicalProjectKeyFromSettings: (project: EnvironmentProject) =>
@@ -30,45 +31,44 @@ vi.mock("../composerDraftStore", () => ({
     }),
   },
 }));
+const ENVIRONMENTS = [
+  {
+    environmentId: "a",
+    label: "A",
+    connection: { phase: "connected" },
+    serverConfig: { environment: { platform: "linux" }, scratchWorkspaceRoot: "/scratch/a" },
+  },
+  {
+    environmentId: "b",
+    label: "B",
+    connection: { phase: "connected" },
+    serverConfig: { environment: { platform: "linux" }, scratchWorkspaceRoot: "/scratch/b" },
+  },
+  {
+    environmentId: "c",
+    label: "C",
+    connection: { phase: "connected" },
+    serverConfig: { environment: { platform: "linux" }, scratchWorkspaceRoot: "/scratch/c" },
+  },
+  {
+    environmentId: "offline",
+    label: "Offline",
+    connection: { phase: "disconnected" },
+    serverConfig: {
+      environment: { platform: "linux" },
+      scratchWorkspaceRoot: "/scratch/offline",
+    },
+  },
+  {
+    environmentId: "unsupported",
+    label: "Unsupported",
+    connection: { phase: "connected" },
+    serverConfig: { environment: { platform: "linux" } },
+  },
+];
 vi.mock("../state/environments", () => ({
   usePrimaryEnvironmentId: () => "a",
-  useEnvironments: () => ({
-    environments: [
-      {
-        environmentId: "a",
-        label: "A",
-        connection: { phase: "connected" },
-        serverConfig: { environment: { platform: "linux" }, scratchWorkspaceRoot: "/scratch/a" },
-      },
-      {
-        environmentId: "b",
-        label: "B",
-        connection: { phase: "connected" },
-        serverConfig: { environment: { platform: "linux" }, scratchWorkspaceRoot: "/scratch/b" },
-      },
-      {
-        environmentId: "c",
-        label: "C",
-        connection: { phase: "connected" },
-        serverConfig: { environment: { platform: "linux" }, scratchWorkspaceRoot: "/scratch/c" },
-      },
-      {
-        environmentId: "offline",
-        label: "Offline",
-        connection: { phase: "disconnected" },
-        serverConfig: {
-          environment: { platform: "linux" },
-          scratchWorkspaceRoot: "/scratch/offline",
-        },
-      },
-      {
-        environmentId: "unsupported",
-        label: "Unsupported",
-        connection: { phase: "connected" },
-        serverConfig: { environment: { platform: "linux" } },
-      },
-    ],
-  }),
+  useEnvironments: () => ({ environments: ENVIRONMENTS }),
 }));
 const project = (id: string) =>
   ({
@@ -80,11 +80,13 @@ const draftId = "draft" as DraftId;
 let result: ReturnType<typeof useScratchDraftEnvironment>;
 let renderer: ReactTestRenderer;
 let canSwitch = true;
-function Probe({ activeProject = project("a") }: { activeProject?: EnvironmentProject }) {
+const readCanSwitch = () => canSwitch;
+const PROJECT_A = project("a");
+function Probe({ activeProject = PROJECT_A }: { activeProject?: EnvironmentProject }) {
   const selection = useScratchDraftEnvironment({
     draftId,
     activeProject,
-    canSwitch: () => canSwitch,
+    canSwitch: readCanSwitch,
   });
   useLayoutEffect(() => {
     result = selection;
@@ -98,6 +100,13 @@ function deferred() {
   });
   return { promise, resolve };
 }
+const select = (id: string) => {
+  let promise!: Promise<void>;
+  act(() => {
+    promise = result.selectEnvironment(EnvironmentId.make(id));
+  });
+  return promise;
+};
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
@@ -115,22 +124,28 @@ describe("projectless machine selection", () => {
     expect(state.open).not.toHaveBeenCalled();
     expect(state.remap).not.toHaveBeenCalled();
   });
-  it("cycles from the current machine and wraps while resolving only the latest selection", async () => {
+  it("keeps the same result between renders while nothing changes", () => {
+    const first = result;
+    act(() => renderer.update(<Probe />));
+    expect(result).toBe(first);
+  });
+  it("retargets only for the latest selection", async () => {
     const b = deferred();
     const c = deferred();
     state.open.mockReturnValueOnce(b.promise).mockReturnValueOnce(c.promise);
-    act(() => result.cycleEnvironment());
+    const toB = select("b");
     expect(result.pending).toBe(true);
-    act(() => result.cycleEnvironment());
+    const toC = select("c");
     expect(state.open.mock.calls.map(([id]) => id)).toEqual(["b", "c"]);
     await act(async () => {
       b.resolve(project("b"));
-      await b.promise;
+      await toB;
     });
     expect(state.remap).not.toHaveBeenCalled();
+    expect(result.pending).toBe(true);
     await act(async () => {
       c.resolve(project("c"));
-      await c.promise;
+      await toC;
     });
     expect(state.remap).toHaveBeenCalledWith(
       "c:project-c",
@@ -138,52 +153,48 @@ describe("projectless machine selection", () => {
       draftId,
     );
     expect(result.pending).toBe(false);
-    act(() => renderer.update(<Probe activeProject={project("c")} />));
-    act(() => result.cycleEnvironment());
-    expect(state.open).toHaveBeenLastCalledWith("a");
   });
-  it("does not overwrite a project selected while the machine is being prepared", async () => {
+  it("cancels a pending switch when the current machine is picked again", async () => {
     const next = deferred();
     state.open.mockReturnValue(next.promise);
-    act(() => {
-      void result.selectEnvironment(EnvironmentId.make("b"));
+    const toB = select("b");
+    await select("a");
+    expect(result.pending).toBe(false);
+    await act(async () => {
+      next.resolve(project("b"));
+      await toB;
     });
+    expect(state.remap).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["the draft moved to another project", { projectId: "chosen-project" }],
+    ["the draft was sent", { promotedTo: "thread-1" }],
+  ])("does not retarget when %s while the machine was prepared", async (_label, change) => {
+    const next = deferred();
+    state.open.mockReturnValue(next.promise);
+    const toB = select("b");
     state.getDraft.mockReturnValue({
       environmentId: "a",
-      projectId: "chosen-project",
+      projectId: "project-a",
       promotedTo: null,
+      ...change,
     });
     await act(async () => {
       next.resolve(project("b"));
-      await next.promise;
+      await toB;
     });
     expect(state.remap).not.toHaveBeenCalled();
     expect(result.pending).toBe(false);
   });
   it("keeps the draft on its machine after a failed resolution", async () => {
     state.open.mockResolvedValue(null);
-    await act(async () => result.selectEnvironment(EnvironmentId.make("b")));
+    await act(async () => select("b"));
     expect(state.remap).not.toHaveBeenCalled();
     expect(result.pending).toBe(false);
-  });
-  it("clears pending state when leaving and returning to the original project", async () => {
-    const next = deferred();
-    state.open.mockReturnValue(next.promise);
-    act(() => {
-      void result.selectEnvironment(EnvironmentId.make("b"));
-    });
-    act(() => renderer.update(<Probe activeProject={project("c")} />));
-    act(() => renderer.update(<Probe activeProject={project("a")} />));
-    expect(result.pending).toBe(false);
-    await act(async () => {
-      next.resolve(project("b"));
-      await next.promise;
-    });
-    expect(state.remap).not.toHaveBeenCalled();
   });
   it("ignores switching once sending starts", async () => {
     canSwitch = false;
-    await act(async () => result.selectEnvironment(EnvironmentId.make("b")));
+    await act(async () => select("b"));
     expect(state.open).not.toHaveBeenCalled();
   });
 });
