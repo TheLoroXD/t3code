@@ -256,6 +256,7 @@ import { BrowserSettingsReadError } from "../browser/openFileInPreview";
 import { previewRuntimeTabId } from "../browser/previewRuntimeTabId";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
+import { usePreviewSession } from "./preview/usePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { subscribePreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
@@ -2243,6 +2244,7 @@ export default function ChatView(props: ChatViewProps) {
     selectActiveRightPanelSurface(state.byThreadKey, activeThreadRef),
   );
   const activePreviewState = useThreadPreviewState(activeThreadRef);
+  usePreviewSession(isServerThread ? activeThreadRef : null);
   const activePreviewServerEpoch = activePreviewState.serverEpoch;
   const resolvePreviewRuntimeTabId = useMemo(
     () =>
@@ -2316,13 +2318,6 @@ export default function ChatView(props: ChatViewProps) {
       threadPanelPresentation,
     ),
   );
-
-  useEffect(() => {
-    if (!activeThreadRef) return;
-    useRightPanelStore
-      .getState()
-      .reconcileBrowserSurfaces(activeThreadRef, Object.keys(activePreviewState.sessions));
-  }, [activePreviewState.sessions, activeThreadRef]);
 
   useEffect(() => {
     if (!activeThreadRef || activePreviewMiniPlayer?.source.kind !== "browser") return;

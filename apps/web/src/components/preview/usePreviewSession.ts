@@ -5,12 +5,15 @@ import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/e
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { useEffect } from "react";
 
 import {
   applyPreviewServerEvent,
   readThreadPreviewState,
   reconcilePreviewServerSessions,
+  useThreadPreviewState,
 } from "~/previewStateStore";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { previewEnvironment } from "~/state/preview";
 
 class PreviewSessionThreadKeyParseError extends Schema.TaggedError<PreviewSessionThreadKeyParseError>()(
@@ -78,6 +81,17 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
   }).pipe(Atom.setIdleTTL(1_000), Atom.withLabel(`preview:session-sync:${threadKey}`));
 });
 
-export function usePreviewSession(threadRef: ScopedThreadRef): void {
-  useAtomValue(previewSessionSyncAtom(scopedThreadKey(threadRef)));
+const inactivePreviewSessionAtom = Atom.make(undefined);
+
+export function usePreviewSession(threadRef: ScopedThreadRef | null): void {
+  useAtomValue(
+    threadRef ? previewSessionSyncAtom(scopedThreadKey(threadRef)) : inactivePreviewSessionAtom,
+  );
+  const state = useThreadPreviewState(threadRef);
+  useEffect(() => {
+    // An empty client cache is not an authoritative empty host. Keep saved
+    // surfaces until the first list arrives, including while reconnecting.
+    if (!threadRef || state.serverEpoch === null) return;
+    useRightPanelStore.getState().reconcileBrowserSurfaces(threadRef, Object.keys(state.sessions));
+  }, [threadRef, state.serverEpoch, state.sessions]);
 }
