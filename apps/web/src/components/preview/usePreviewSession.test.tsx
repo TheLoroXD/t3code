@@ -10,7 +10,7 @@ import { selectThreadRightPanelState, useRightPanelStore } from "~/rightPanelSto
 
 import { usePreviewSession } from "./usePreviewSession";
 
-const calls = vi.hoisted(() => ({ list: vi.fn(), events: vi.fn() }));
+const calls = vi.hoisted(() => ({ list: vi.fn(), events: vi.fn(), listRead: vi.fn() }));
 vi.mock("~/state/preview", () => ({
   previewEnvironment: {
     list: (input: unknown) => {
@@ -28,7 +28,13 @@ const ref = {
   environmentId: EnvironmentId.make("reconnect-host"),
   threadId: ThreadId.make("reconnect-thread"),
 };
-const listAtom = Atom.make<AsyncResult.AsyncResult<PreviewListResult>>(AsyncResult.initial(false));
+const listStateAtom = Atom.make<AsyncResult.AsyncResult<PreviewListResult>>(
+  AsyncResult.initial(false),
+);
+const listAtom = Atom.make((get) => {
+  calls.listRead();
+  return get(listStateAtom);
+});
 const eventsAtom = Atom.make(AsyncResult.initial(false));
 const session = {
   threadId: ref.threadId,
@@ -64,6 +70,7 @@ const panel = () => selectThreadRightPanelState(useRightPanelStore.getState().by
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  appAtomRegistry.reset();
   vi.clearAllMocks();
   resetPreviewStateForTests();
   useRightPanelStore.setState({
@@ -71,7 +78,7 @@ beforeEach(() => {
     threadPanelVisibilityByThreadKey: {},
     userActionRevisionByThreadKey: {},
   });
-  appAtomRegistry.set(listAtom, AsyncResult.initial(false));
+  appAtomRegistry.set(listStateAtom, AsyncResult.initial(false));
   appAtomRegistry.set(eventsAtom, AsyncResult.initial(false));
 });
 afterEach(async () => {
@@ -85,11 +92,12 @@ describe("thread browser reconnect", () => {
   it("keeps a saved surface while the host is loading, then restores its live tab without a browser view", async () => {
     useRightPanelStore.getState().openBrowser(ref, session.tabId);
     await mount();
+    expect(calls.listRead).toHaveBeenCalled();
     expect(panel().activeSurfaceId).toBe(`browser:${session.tabId}`);
     expect(readThreadPreviewState(ref).serverEpoch).toBeNull();
     await act(() => {
       appAtomRegistry.set(
-        listAtom,
+        listStateAtom,
         AsyncResult.success({ serverEpoch: "linux-process", revision: 1, sessions: [session] }),
       );
     });
@@ -104,7 +112,7 @@ describe("thread browser reconnect", () => {
     expect(panel().surfaces).toHaveLength(1);
     await act(() => {
       appAtomRegistry.set(
-        listAtom,
+        listStateAtom,
         AsyncResult.success({ serverEpoch: "linux-process", revision: 2, sessions: [] }),
       );
     });
@@ -115,5 +123,6 @@ describe("thread browser reconnect", () => {
     await mount(false);
     expect(calls.list).not.toHaveBeenCalled();
     expect(calls.events).not.toHaveBeenCalled();
+    expect(calls.listRead).not.toHaveBeenCalled();
   });
 });

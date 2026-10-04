@@ -41,6 +41,9 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
   });
 
   return Atom.make((get) => {
+    // Subscribing to an unread query only registers a listener. Mount it so
+    // the first host request runs even before a browser view exists.
+    get.mount(sessionsAtom);
     let disposed = false;
     let eventsVersion = 0;
 
