@@ -1,3 +1,9 @@
+import { PreviewRemoteBrowserError } from "@t3tools/contracts";
+import * as RemoteBrowser from "./preview/RemoteBrowser.ts";
+import {
+  remoteBrowserViewerIdentity,
+  remoteBrowserVisibleController,
+} from "./preview/RemoteBrowserViewerIdentity.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -1184,6 +1190,7 @@ const makeWsRpcLayer = (
   ServerWsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const remoteBrowser = yield* Effect.serviceOption(RemoteBrowser.RemoteBrowser);
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const intakeContext = yield* Effect.context<
@@ -3442,26 +3449,111 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "terminal" },
           ),
+        [WS_METHODS.remoteBrowserInfo]: () =>
+          observeRpcEffect(
+            WS_METHODS.remoteBrowserInfo,
+            Option.isSome(remoteBrowser)
+              ? remoteBrowser.value.info
+              : Effect.fail(new PreviewRemoteBrowserError({ reason: "unavailable" })),
+            { "rpc.aggregate": "preview" },
+          ),
+        [WS_METHODS.remoteBrowserProfile]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteBrowserProfile,
+            Option.isSome(remoteBrowser)
+              ? remoteBrowser.value.profile(input)
+              : Effect.fail(new PreviewRemoteBrowserError({ reason: "unavailable" })),
+            { "rpc.aggregate": "preview" },
+          ),
+        [WS_METHODS.remoteBrowserControl]: (input) => {
+          const identity = remoteBrowserViewerIdentity(currentSessionId, input.viewerId);
+          return observeRpcEffect(
+            WS_METHODS.remoteBrowserControl,
+            Option.isSome(remoteBrowser)
+              ? remoteBrowser.value.control({ ...input, viewerId: identity }).pipe(
+                  Effect.map((value) => ({
+                    ...value,
+                    controller: remoteBrowserVisibleController(
+                      value.controller,
+                      identity,
+                      input.viewerId,
+                    ),
+                  })),
+                )
+              : Effect.fail(new PreviewRemoteBrowserError({ reason: "unavailable" })),
+            { "rpc.aggregate": "preview" },
+          );
+        },
+        [WS_METHODS.remoteBrowserInput]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteBrowserInput,
+            Option.isSome(remoteBrowser)
+              ? remoteBrowser.value.input({
+                  ...input,
+                  viewerId: remoteBrowserViewerIdentity(currentSessionId, input.viewerId),
+                })
+              : Effect.fail(new PreviewRemoteBrowserError({ reason: "unavailable" })),
+            { "rpc.aggregate": "preview" },
+          ),
+        [WS_METHODS.remoteBrowserFrames]: (input) => {
+          const identity = remoteBrowserViewerIdentity(currentSessionId, input.viewerId);
+          return observeRpcStream(
+            WS_METHODS.remoteBrowserFrames,
+            Option.isSome(remoteBrowser)
+              ? remoteBrowser.value.frames({ ...input, viewerId: identity }).pipe(
+                  Stream.map((frame) => ({
+                    ...frame,
+                    controller: remoteBrowserVisibleController(
+                      frame.controller,
+                      identity,
+                      input.viewerId,
+                    ),
+                  })),
+                )
+              : Stream.fail(new PreviewRemoteBrowserError({ reason: "unavailable" })),
+            { "rpc.aggregate": "preview" },
+          );
+        },
         [WS_METHODS.previewOpen]: (input) =>
-          observeRpcEffect(WS_METHODS.previewOpen, previewManager.open(input), {
-            "rpc.aggregate": "preview",
-          }),
+          observeRpcEffect(
+            WS_METHODS.previewOpen,
+            (Option.isSome(remoteBrowser) ? remoteBrowser.value : previewManager).open(input),
+            {
+              "rpc.aggregate": "preview",
+            },
+          ),
         [WS_METHODS.previewNavigate]: (input) =>
-          observeRpcEffect(WS_METHODS.previewNavigate, previewManager.navigate(input), {
-            "rpc.aggregate": "preview",
-          }),
+          observeRpcEffect(
+            WS_METHODS.previewNavigate,
+            (Option.isSome(remoteBrowser) ? remoteBrowser.value : previewManager).navigate(input),
+            {
+              "rpc.aggregate": "preview",
+            },
+          ),
         [WS_METHODS.previewResize]: (input) =>
-          observeRpcEffect(WS_METHODS.previewResize, previewManager.resize(input), {
-            "rpc.aggregate": "preview",
-          }),
+          observeRpcEffect(
+            WS_METHODS.previewResize,
+            (Option.isSome(remoteBrowser) ? remoteBrowser.value : previewManager).resize(input),
+            {
+              "rpc.aggregate": "preview",
+            },
+          ),
         [WS_METHODS.previewRefresh]: (input) =>
-          observeRpcEffect(WS_METHODS.previewRefresh, previewManager.refresh(input), {
-            "rpc.aggregate": "preview",
-          }),
+          observeRpcEffect(
+            WS_METHODS.previewRefresh,
+            (Option.isSome(remoteBrowser) ? remoteBrowser.value : previewManager).refresh(input),
+            {
+              "rpc.aggregate": "preview",
+            },
+          ),
         [WS_METHODS.previewClose]: (input) =>
-          observeRpcEffect(WS_METHODS.previewClose, previewManager.close(input), {
-            "rpc.aggregate": "preview",
-          }),
+          observeRpcEffect(
+            WS_METHODS.previewClose,
+            (Option.isSome(remoteBrowser) ? remoteBrowser.value : previewManager).close(input),
+            {
+              "rpc.aggregate": "preview",
+            },
+          ),
         [WS_METHODS.previewList]: (input) =>
           observeRpcEffect(WS_METHODS.previewList, previewManager.list(input), {
             "rpc.aggregate": "preview",

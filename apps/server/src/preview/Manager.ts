@@ -26,11 +26,7 @@ import {
   type PreviewSessionSnapshot,
   type PreviewViewportSetting,
 } from "@t3tools/contracts";
-import {
-  isPreviewUrlNormalizationError,
-  newPreviewTabId,
-  normalizePreviewUrl,
-} from "@t3tools/shared/preview";
+import { isPreviewUrlNormalizationError, normalizePreviewUrl } from "@t3tools/shared/preview";
 import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -45,6 +41,8 @@ export class PreviewManager extends Context.Service<
   PreviewManager,
   {
     readonly open: (input: PreviewOpenInput) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
+    /** Restore host-owned metadata without launching a browser or replaying navigation. */
+    readonly restore: (snapshot: PreviewSessionSnapshot) => Effect.Effect<void>;
     readonly navigate: (
       input: PreviewNavigateInput,
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
@@ -124,6 +122,7 @@ const buildLoadingSnapshot = (input: {
   readonly title: string;
   readonly viewport: PreviewViewportSetting;
   readonly profileId?: string | undefined;
+  readonly host?: PreviewOpenInput["host"];
   readonly updatedAt: string;
 }): PreviewSessionSnapshot => ({
   threadId: input.threadId,
@@ -133,6 +132,7 @@ const buildLoadingSnapshot = (input: {
   canGoForward: false,
   viewport: input.viewport,
   ...(input.profileId === undefined ? {} : { profileId: input.profileId }),
+  ...(input.host === undefined ? {} : { host: input.host }),
   updatedAt: input.updatedAt,
 });
 
@@ -141,6 +141,7 @@ const buildIdleSnapshot = (input: {
   readonly tabId: string;
   readonly viewport: PreviewViewportSetting;
   readonly profileId?: string | undefined;
+  readonly host?: PreviewOpenInput["host"];
   readonly updatedAt: string;
 }): PreviewSessionSnapshot => ({
   threadId: input.threadId,
@@ -150,6 +151,7 @@ const buildIdleSnapshot = (input: {
   canGoForward: false,
   viewport: input.viewport,
   ...(input.profileId === undefined ? {} : { profileId: input.profileId }),
+  ...(input.host === undefined ? {} : { host: input.host }),
   updatedAt: input.updatedAt,
 });
 
@@ -221,7 +223,8 @@ export const make = Effect.gen(function* PreviewManagerMake() {
 
   const open: PreviewManager["Service"]["open"] = Effect.fn("PreviewManager.open")(
     function* (input) {
-      const tabId = newPreviewTabId();
+      // Restored tabs can outlive a process; a process-local counter could reuse their IDs.
+      const tabId = `tab_${NodeCrypto.randomUUID()}`;
       const updatedAt = yield* currentIsoTimestamp;
       // Clients with a configured default send the viewport up front so the
       // session is born at the right size; older clients omit it and keep the
@@ -235,6 +238,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             title: "",
             viewport,
             profileId: input.profileId,
+            host: input.host,
             updatedAt,
           })
         : buildIdleSnapshot({
@@ -242,6 +246,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             tabId,
             viewport,
             profileId: input.profileId,
+            host: input.host,
             updatedAt,
           });
       yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
@@ -269,6 +274,29 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     },
   );
 
+  const restore: PreviewManager["Service"]["restore"] = (snapshot) =>
+    SynchronizedRef.modifyEffect(stateRef, (state) =>
+      Effect.gen(function* () {
+        const sessions = new Map(state.sessions);
+        const revision = state.revision + 1;
+        sessions.set(compositeKey(snapshot.threadId, snapshot.tabId), {
+          threadId: snapshot.threadId,
+          tabId: snapshot.tabId,
+          snapshot,
+        });
+        yield* PubSub.publish(eventsPubSub, {
+          type: "opened",
+          threadId: snapshot.threadId,
+          tabId: snapshot.tabId,
+          createdAt: snapshot.updatedAt,
+          snapshot,
+          serverEpoch,
+          revision,
+        });
+        return [undefined, { sessions, revision }] as const;
+      }),
+    );
+
   const navigate: PreviewManager["Service"]["navigate"] = Effect.fn("PreviewManager.navigate")(
     function* (input) {
       const url = yield* normalizeUrl(input.url);
@@ -290,6 +318,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             ...(session.snapshot.profileId === undefined
               ? {}
               : { profileId: session.snapshot.profileId }),
+            ...(session.snapshot.host === undefined ? {} : { host: session.snapshot.host }),
             updatedAt,
           };
           return {
@@ -326,6 +355,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           ...(session.snapshot.profileId === undefined
             ? {}
             : { profileId: session.snapshot.profileId }),
+          ...(session.snapshot.host === undefined ? {} : { host: session.snapshot.host }),
           updatedAt,
         };
         const emit: PreviewEventDraft =
@@ -366,6 +396,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           const snapshot: PreviewSessionSnapshot = {
             ...session.snapshot,
             viewport: input.viewport,
+            ...(session.snapshot.host === undefined ? {} : { host: session.snapshot.host }),
             updatedAt,
           };
           return {
@@ -447,6 +478,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
 
   return PreviewManager.of({
     open,
+    restore,
     navigate,
     reportStatus,
     resize,

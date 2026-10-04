@@ -1,3 +1,4 @@
+import { browserHostPreference } from "./browserHostPreferences";
 import type {
   AssetCreateUrlResult,
   AssetResource,
@@ -54,6 +55,7 @@ export type OpenPreviewMutation<E = unknown> = (input: {
 export async function openUrlInPreview<E>(input: {
   readonly threadRef: ScopedThreadRef;
   readonly url: string;
+  readonly assetRelativeUrl?: string;
   readonly openPreview: OpenPreviewMutation<E>;
 }): Promise<AtomCommandResult<void, E | BrowserSettingsReadError>> {
   const defaults = await resolveBrowserDefaults().catch(
@@ -62,16 +64,25 @@ export async function openUrlInPreview<E>(input: {
   if (defaults instanceof BrowserSettingsReadError) {
     return AsyncResult.failure(Cause.fail(defaults));
   }
+  const choice = browserHostPreference(input.threadRef.environmentId);
   const result = await input.openPreview({
     environmentId: input.threadRef.environmentId,
     input: {
       threadId: input.threadRef.threadId,
       url: input.url,
+      ...(choice.host === "environment" && input.assetRelativeUrl
+        ? { assetRelativeUrl: input.assetRelativeUrl }
+        : {}),
       // Built here rather than via `openPreviewSession` because this path
       // maps the result differently, so the configured defaults have to be
       // applied explicitly or file/link opens would ignore them.
       viewport: browserDefaultOpenViewport(defaults),
-      profileId: browserDefaultOpenProfileId(defaults),
+      host: choice.host,
+      ...(choice.host === "client"
+        ? { profileId: browserDefaultOpenProfileId(defaults) }
+        : choice.profileId
+          ? { profileId: choice.profileId }
+          : {}),
     },
   });
   return mapAtomCommandResult(result, (snapshot) => {
@@ -134,6 +145,7 @@ export async function openFileInPreview<AssetError, PreviewError>(input: {
   return openUrlInPreview({
     threadRef: input.threadRef,
     url: assetUrl,
+    assetRelativeUrl: assetResult.value.relativeUrl,
     openPreview: input.openPreview,
   });
 }

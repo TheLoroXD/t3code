@@ -29,6 +29,42 @@ export function createPreviewEnvironmentAtoms<R, E>(
       JSON.stringify([environmentId, input.threadId]),
   };
   return {
+    remoteInfo: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "preview:remote:info",
+      tag: WS_METHODS.remoteBrowserInfo,
+      staleTimeMs: 5_000,
+    }),
+    remoteProfile: createEnvironmentRpcCommand(runtime, {
+      label: "preview:remote:profile",
+      tag: WS_METHODS.remoteBrowserProfile,
+      scheduler: lifecycleScheduler,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
+    remoteControl: createEnvironmentRpcCommand(runtime, {
+      label: "preview:remote:control",
+      tag: WS_METHODS.remoteBrowserControl,
+      scheduler: automationScheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.tabId, input.viewerId]),
+      },
+    }),
+    remoteInput: createEnvironmentRpcCommand(runtime, {
+      label: "preview:remote:input",
+      tag: WS_METHODS.remoteBrowserInput,
+      scheduler: automationScheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.tabId, input.viewerId]),
+      },
+    }),
+    remoteFrames: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "preview:remote:frames",
+      tag: WS_METHODS.remoteBrowserFrames,
+      idleTtlMs: 0,
+    }),
     list: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:preview:list",
       tag: WS_METHODS.previewList,

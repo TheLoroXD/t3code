@@ -3,6 +3,34 @@
 Connect a phone, browser, or another desktop app to T3 Code running on a different
 machine. That machine must stay running and reachable while you work.
 
+## Run a browser on the connected host
+
+In this fork, opening the Browser panel on web or desktop lets you choose where
+the browser runs. **This Mac** uses the desktop app's browser. Choosing the
+thread's **host** streams a browser running on that machine. The host needs
+Google Chrome or Chromium installed.
+
+Choose the host when a task must keep using the browser after you close your
+laptop. Keep the thread on that host too. Closing the panel or disconnecting
+the client leaves the host's browser and agent running; reconnect to return to
+the same tabs. Closing a tab ends that tab.
+
+Host profiles have separate cookies and persist on that host. They do not
+automatically sync with local browser profiles. Incognito tabs are temporary.
+While you have control, the agent can inspect the page but cannot change it;
+release control to let the agent continue. Files uploaded through the viewer
+go to the host browser, and downloads can be saved to your client.
+
+A host or browser restart restores the tab list. Reload a tab to reopen it;
+previous form inputs and actions are not replayed. Video recording requires
+FFmpeg on the host. Set `T3CODE_BROWSER_FFMPEG_PATH` to its executable, or install
+the matching encoder with `node apps/server/node_modules/playwright-core/cli.js install ffmpeg`
+from the source checkout.
+
+The desktop fork uses a separate app name and data directory, so it can run
+beside the official app. Its automatic updates are disabled; update the fork
+from your own builds.
+
 ## T3 Connect
 
 T3 Connect makes an environment available to your other devices without setting

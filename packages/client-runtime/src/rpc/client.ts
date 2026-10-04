@@ -56,6 +56,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.scheduledTasksSubscribe
   | typeof WS_METHODS.subscribeTerminalEvents
   | typeof WS_METHODS.subscribeTerminalMetadata
+  | typeof WS_METHODS.remoteBrowserFrames
   | typeof WS_METHODS.subscribePreviewEvents
   | typeof WS_METHODS.subscribeDiscoveredLocalServers
   | typeof WS_METHODS.subscribeDeviceState

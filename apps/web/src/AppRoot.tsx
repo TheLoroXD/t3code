@@ -1,3 +1,4 @@
+import { BrowserOpenDialog } from "./components/preview/BrowserOpenDialog";
 import { RouterProvider } from "@tanstack/react-router";
 
 import { ElectronBrowserHost } from "./browser/ElectronBrowserHost";
@@ -17,6 +18,7 @@ export function AppRoot({ router }: { readonly router: AppRouter }) {
       <RouterProvider router={router} />
       <PreviewAutomationHosts />
       <ElectronBrowserHost />
+      <BrowserOpenDialog />
       <QuitHoldOverlay />
     </AppAtomRegistryProvider>
   );

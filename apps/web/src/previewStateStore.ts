@@ -461,7 +461,7 @@ export function rememberPreviewUrl(ref: ScopedThreadRef, url: string): void {
 
 export function isPreviewSupportedInRuntime(): boolean {
   if (typeof window === "undefined") return false;
-  return Boolean(window.desktopBridge?.preview);
+  return true;
 }
 
 export function resetPreviewStateForTests(): void {

@@ -1,5 +1,9 @@
 "use client";
 
+import { RemoteBrowserView, type RemoteBrowserViewHandle } from "./RemoteBrowserView";
+import { useEnvironment } from "~/state/environments";
+import { useAtomValue } from "@effect/atom-react";
+
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
@@ -104,6 +108,8 @@ export function PreviewView({
   visible,
   onSendAnnotation,
 }: Props) {
+  const remoteControls = useRef<RemoteBrowserViewHandle>(null);
+  const environment = useEnvironment(threadRef.environmentId);
   const [focusUrlNonce, setFocusUrlNonce] = useState<number | undefined>(undefined);
   const [pickActive, setPickActive] = useState(false);
   const activeRecordingTabIds = useActiveBrowserRecordingTabIds();
@@ -150,6 +156,7 @@ export function PreviewView({
         : findActiveBrowserRecordingRuntimeTabId(threadRef, tabId)
       : null;
   const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
+  const isRemote = snapshot?.host === "environment";
   const desktopOverlay = tabId ? (previewState.desktopByTabId[tabId] ?? null) : null;
   const navStatus = snapshot?.navStatus ?? { _tag: "Idle" as const };
   const url = navStatus._tag === "Idle" ? "" : navStatus.url;
@@ -170,6 +177,13 @@ export function PreviewView({
   // as "every profile".
   const activeProfileId = snapshot?.profileId ?? DEFAULT_BROWSER_PROFILE_ID;
   const activeProfileName = previewProfileName(browserDefaults.profiles, activeProfileId);
+  const remoteInfo = useAtomValue(
+    previewEnvironment.remoteInfo({ environmentId: threadRef.environmentId, input: {} }),
+  );
+  const remoteProfileName =
+    remoteInfo._tag === "Success"
+      ? previewProfileName(remoteInfo.value.profiles, activeProfileId)
+      : "Connecting…";
   const panelRect = useBrowserSurfaceStore((state) =>
     runtimeTabId ? (state.byTabId[runtimeTabId]?.rect ?? null) : null,
   );
@@ -187,6 +201,14 @@ export function PreviewView({
 
   const navigateToResolvedUrl = useCallback(
     async (resolvedUrl: string) => {
+      if (isRemote && remoteControls.current) {
+        const result = await remoteControls.current.dispatch({
+          _tag: "navigate",
+          url: resolvedUrl,
+        });
+        if (result) rememberPreviewUrl(threadRef, resolvedUrl);
+        return result;
+      }
       if (runtimeTabId && previewBridge) {
         // The bridge mirrors the resolved URL back to the server.
         await previewBridge.navigate(runtimeTabId, resolvedUrl);
@@ -206,7 +228,7 @@ export function PreviewView({
       }
       return result._tag === "Success";
     },
-    [open, runtimeTabId, threadRef],
+    [isRemote, open, runtimeTabId, threadRef],
   );
 
   const handleSubmitUrl = useCallback(
@@ -226,7 +248,9 @@ export function PreviewView({
   const handleOpenServerUrl = useCallback(
     async (next: string) => {
       try {
-        const resolved = resolveDiscoveredServerUrl(threadRef.environmentId, next);
+        const resolved = isRemote
+          ? next
+          : resolveDiscoveredServerUrl(threadRef.environmentId, next);
         if (await navigateToResolvedUrl(resolved)) {
           recordVisitForThread(threadRef, next);
         }
@@ -234,24 +258,28 @@ export function PreviewView({
         // Server-side `failed` event renders the unreachable view.
       }
     },
-    [navigateToResolvedUrl, threadRef],
+    [isRemote, navigateToResolvedUrl, threadRef],
   );
 
   const handleRefresh = useCallback(() => {
+    if (isRemote) {
+      void remoteControls.current?.dispatch({ _tag: "reload" });
+      return;
+    }
     if (previewBridge && runtimeTabId) void previewBridge.refresh(runtimeTabId);
-  }, [runtimeTabId]);
+  }, [isRemote, runtimeTabId]);
 
   const handleZoomIn = useCallback(() => {
     if (previewBridge && runtimeTabId) void previewBridge.zoomIn(runtimeTabId);
-  }, [runtimeTabId]);
+  }, [isRemote, runtimeTabId]);
 
   const handleZoomOut = useCallback(() => {
     if (previewBridge && runtimeTabId) void previewBridge.zoomOut(runtimeTabId);
-  }, [runtimeTabId]);
+  }, [isRemote, runtimeTabId]);
 
   const handleResetZoom = useCallback(() => {
     if (previewBridge && runtimeTabId) void previewBridge.resetZoom(runtimeTabId);
-  }, [runtimeTabId]);
+  }, [isRemote, runtimeTabId]);
 
   const handleViewportChange = useCallback(
     async (nextViewport: PreviewViewportSetting) => {
@@ -301,12 +329,20 @@ export function PreviewView({
   }, [handleViewportChange, runtimeTabId]);
 
   const handleBack = useCallback(() => {
+    if (isRemote) {
+      void remoteControls.current?.dispatch({ _tag: "history", direction: "back" });
+      return;
+    }
     if (previewBridge && runtimeTabId) void previewBridge.goBack(runtimeTabId);
-  }, [runtimeTabId]);
+  }, [isRemote, runtimeTabId]);
 
   const handleForward = useCallback(() => {
+    if (isRemote) {
+      void remoteControls.current?.dispatch({ _tag: "history", direction: "forward" });
+      return;
+    }
     if (previewBridge && runtimeTabId) void previewBridge.goForward(runtimeTabId);
-  }, [runtimeTabId]);
+  }, [isRemote, runtimeTabId]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!localApi || !url) return;
@@ -676,7 +712,7 @@ export function PreviewView({
       }
       if (isMountedRef.current) setPickActive(false);
     };
-  }, [runtimeTabId]);
+  }, [isRemote, runtimeTabId]);
 
   // Subscribe only while visible; `toggle-panel` is owned by ChatView's
   // URL-aware handler regardless of whether the panel is currently mounted.
@@ -722,13 +758,15 @@ export function PreviewView({
         onRefresh={handleRefresh}
         onSubmit={(next) => void handleSubmitUrl(next)}
         onOpenInBrowser={tabId ? handleOpenInBrowser : undefined}
-        onCapture={previewBridge && tabId ? handleCapture : undefined}
+        onCapture={!isRemote && previewBridge && tabId ? handleCapture : undefined}
         captureDisabled={!desktopOverlay || isUnreachable}
         recording={recordingRuntimeTabId !== null}
-        onPictureInPicture={previewBridge && tabId ? handlePictureInPicture : undefined}
+        onPictureInPicture={
+          !isRemote && previewBridge && tabId ? handlePictureInPicture : undefined
+        }
         pictureInPicture={miniPlayerTabId === tabId}
         pictureInPictureDisabled={!desktopOverlay?.hasWebContents || isUnreachable}
-        onPickElement={previewBridge && tabId ? handlePickElement : undefined}
+        onPickElement={!isRemote && previewBridge && tabId ? handlePickElement : undefined}
         pickActive={pickActive}
         // Disable when there's no tab (nothing to pick on) OR the page
         // failed to load (a React overlay covers the webview, so the
@@ -741,7 +779,11 @@ export function PreviewView({
           // Only when it differs from the default: labelling every tab
           // "Default" would be noise on the common case, while a tab in
           // another profile is exactly what needs calling out.
-          activeProfileId !== browserDefaults.profileId ? (
+          isRemote ? (
+            <Badge variant="outline">
+              {environment?.label ?? "Host"} · {remoteProfileName}
+            </Badge>
+          ) : activeProfileId !== browserDefaults.profileId ? (
             // Capped: profile names run to 48 characters, and an unbounded
             // badge in this row takes its width from the URL input, the only
             // flexible element in the compact chrome. The cap sits on the
@@ -758,7 +800,7 @@ export function PreviewView({
           ) : null
         }
         trailingActions={
-          previewBridge ? (
+          !isRemote && previewBridge ? (
             <PreviewMoreMenu
               environmentId={threadRef.environmentId}
               profileId={activeProfileId}
@@ -777,7 +819,15 @@ export function PreviewView({
       />
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {runtimeTabId && snapshot && !showEmptyState ? (
+        {isRemote && tabId ? (
+          <RemoteBrowserView
+            threadRef={threadRef}
+            tabId={tabId}
+            visible={visible && !isUnreachable}
+            controlRef={remoteControls}
+          />
+        ) : null}
+        {!isRemote && runtimeTabId && snapshot && !showEmptyState ? (
           <BrowserSurfaceSlot
             key={runtimeTabId}
             tabId={runtimeTabId}
@@ -785,7 +835,7 @@ export function PreviewView({
             className="absolute inset-0 h-full w-full"
           />
         ) : null}
-        {showEmptyState ? (
+        {!isRemote && showEmptyState ? (
           <PreviewEmptyState
             threadRef={threadRef}
             environmentId={threadRef.environmentId}

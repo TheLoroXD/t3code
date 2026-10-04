@@ -38,6 +38,7 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import * as RemoteBrowser from "../preview/RemoteBrowser.ts";
 
 export interface PreviewAutomationInvokeInput {
   readonly scope: McpInvocationContext.McpInvocationScope;
@@ -317,6 +318,7 @@ const classifyResponseError = (
 
 export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const crypto = yield* Crypto.Crypto;
+  const remoteBrowser = yield* Effect.serviceOption(RemoteBrowser.RemoteBrowser);
   const state = yield* SynchronizedRef.make<BrokerState>({
     clients: new Map(),
     assignments: new Map(),
@@ -473,6 +475,32 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const invoke = Effect.fn("PreviewAutomationBroker.invoke")(function* <A = unknown>(
     input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
   ): Effect.fn.Return<A, PreviewAutomationError> {
+    if (Option.isSome(remoteBrowser)) {
+      const remoteRequestId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      const result = yield* remoteBrowser.value.invoke(input).pipe(
+        Effect.mapError(
+          (cause) =>
+            new (cause._tag === "PreviewRemoteBrowserError" && cause.reason === "busy"
+              ? PreviewAutomationControlInterruptedError
+              : PreviewAutomationExecutionError)({
+              operation: input.operation,
+              environmentId: input.scope.environmentId,
+              threadId: input.scope.threadId,
+              providerSessionId: input.scope.providerSessionId,
+              providerInstanceId: input.scope.providerInstanceId,
+              clientId: "environment-browser",
+              connectionId: "server-owned",
+              requestId: remoteRequestId,
+              timeoutMs: input.timeoutMs ?? 15_000,
+              ...(input.tabId === undefined ? {} : { tabId: input.tabId }),
+              remoteTag: cause._tag,
+              remoteMessageLength: cause.message.length,
+              cause,
+            }),
+        ),
+      );
+      if (Option.isSome(result)) return result.value as A;
+    }
     const timeoutMs = input.timeoutMs ?? 15_000;
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
     const route = yield* SynchronizedRef.modify(state, (current) => {

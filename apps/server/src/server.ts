@@ -1,3 +1,4 @@
+import * as RemoteBrowser from "./preview/RemoteBrowser.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -396,7 +397,10 @@ const TerminalLayerLive = TerminalManager.layer.pipe(
   Layer.provide(NativeTelemetryLayerLive),
 );
 
+const RemoteBrowserLayerLive = RemoteBrowser.layer.pipe(Layer.provide(PreviewManager.layer));
+
 const PreviewLayerLive = Layer.empty.pipe(
+  Layer.provideMerge(RemoteBrowserLayerLive),
   Layer.provideMerge(PreviewManager.layer),
   Layer.provideMerge(PortScannerLayerLive),
 );
@@ -664,7 +668,7 @@ const makeRoutesLayer = Layer.mergeAll(
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
-  Layer.provide(PreviewAutomationBroker.layer),
+  Layer.provide(PreviewAutomationBroker.layer.pipe(Layer.provide(RemoteBrowserLayerLive))),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),
   Layer.provide(browserApiCorsLayer),

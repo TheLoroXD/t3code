@@ -1,3 +1,4 @@
+import { useBrowserHostPreferences } from "~/browser/browserHostPreferences";
 import {
   DEFAULT_BROWSER_PROFILE_ID,
   DEFAULT_CLIENT_SETTINGS,
@@ -36,6 +37,7 @@ const snapshot: PreviewSessionSnapshot = {
 };
 
 beforeEach(() => {
+  useBrowserHostPreferences.setState({ byEnvironment: { local: { host: "client" } } });
   resetPreviewStateForTests();
   __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
 });
@@ -59,6 +61,7 @@ describe("openPreviewSession", () => {
     });
 
     expect(open).toHaveBeenCalledWith({
+      host: "client",
       threadId: "thread-1",
       viewport: FILL_PREVIEW_VIEWPORT,
       profileId: DEFAULT_BROWSER_PROFILE_ID,
@@ -77,6 +80,7 @@ describe("openPreviewSession", () => {
     });
 
     expect(open).toHaveBeenCalledWith({
+      host: "client",
       threadId: "thread-1",
       url: "t3.chat",
       viewport: FILL_PREVIEW_VIEWPORT,
@@ -131,6 +135,7 @@ describe("openPreviewSession", () => {
       expect(openPreview).toHaveBeenCalledExactlyOnceWith({
         environmentId: threadRef.environmentId,
         input: {
+          host: "client",
           threadId: threadRef.threadId,
           url: input.url,
           viewport,

@@ -1,3 +1,5 @@
+import { AsyncResult } from "effect/unstable/reactivity";
+import { chooseBrowserHost } from "./BrowserOpenDialog";
 import {
   mapAtomCommandResult,
   type AtomCommandResult,
@@ -16,10 +18,13 @@ export async function addBrowserSurface<E>(input: {
   /** Omit to use the configured default profile. */
   readonly profileId?: string | undefined;
 }): Promise<AtomCommandResult<void, E | BrowserSettingsReadError>> {
+  const choice = await chooseBrowserHost(input.threadRef, input.profileId);
+  if (!choice) return AsyncResult.success(undefined);
   const result = await openPreviewSession({
+    host: choice.host,
+    profileId: choice.profileId,
     openPreview: input.openPreview,
     threadRef: input.threadRef,
-    ...(input.profileId === undefined ? {} : { profileId: input.profileId }),
   });
   return mapAtomCommandResult(result, (snapshot) => {
     useRightPanelStore.getState().openBrowser(input.threadRef, snapshot.tabId);

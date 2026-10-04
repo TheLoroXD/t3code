@@ -5,6 +5,7 @@ import {
   PREVIEW_VIEWPORT_MAX_AREA,
   PreviewRenderedViewportSize,
   PreviewTabId,
+  PreviewBrowserHost,
   PreviewViewportPresetId,
   PreviewViewportSetting,
   PreviewViewportSize,
@@ -79,6 +80,14 @@ export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
 
 export const PreviewAutomationOpenInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  host: Schema.optional(PreviewBrowserHost).annotate({
+    description:
+      "Physical browser owner: client for the connected desktop, environment for a persistent browser on this server. Defaults to the thread's selected host.",
+  }),
+  profileId: Schema.optional(TrimmedNonEmptyString).annotate({
+    description:
+      "Profile ID on the selected host. Remote profiles are independent of desktop profiles.",
+  }),
   url: Schema.optional(BoundedUrl).annotate({
     description: `Optional initial page URL. ${URL_GUIDANCE} Omit to open a blank tab.`,
   }),

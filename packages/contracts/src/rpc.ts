@@ -1,3 +1,12 @@
+import {
+  RemoteBrowserInfo,
+  RemoteBrowserProfileInput,
+  RemoteBrowserControlInput,
+  RemoteBrowserControl,
+  RemoteBrowserInput,
+  RemoteBrowserStreamInput,
+  RemoteBrowserFrame,
+} from "./remoteBrowser.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
   ChatGptReconnectProfileInput,
@@ -409,6 +418,11 @@ export const WS_METHODS = {
   terminalClose: "terminal.close",
 
   // Preview methods
+  remoteBrowserInfo: "remoteBrowser.info",
+  remoteBrowserProfile: "remoteBrowser.profile",
+  remoteBrowserControl: "remoteBrowser.control",
+  remoteBrowserInput: "remoteBrowser.input",
+  remoteBrowserFrames: "remoteBrowser.frames",
   previewOpen: "preview.open",
   previewNavigate: "preview.navigate",
   previewResize: "preview.resize",
@@ -1370,6 +1384,32 @@ const WsTerminalCloseRpc = Rpc.make(WS_METHODS.terminalClose, {
   error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
 });
 
+const WsRemoteBrowserInfoRpc = Rpc.make(WS_METHODS.remoteBrowserInfo, {
+  payload: Schema.Struct({}),
+  success: RemoteBrowserInfo,
+  error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
+});
+const WsRemoteBrowserProfileRpc = Rpc.make(WS_METHODS.remoteBrowserProfile, {
+  payload: RemoteBrowserProfileInput,
+  success: RemoteBrowserInfo,
+  error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
+});
+const WsRemoteBrowserControlRpc = Rpc.make(WS_METHODS.remoteBrowserControl, {
+  payload: RemoteBrowserControlInput,
+  success: RemoteBrowserControl,
+  error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
+});
+const WsRemoteBrowserInputRpc = Rpc.make(WS_METHODS.remoteBrowserInput, {
+  payload: RemoteBrowserInput,
+  error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
+});
+const WsRemoteBrowserFramesRpc = Rpc.make(WS_METHODS.remoteBrowserFrames, {
+  payload: RemoteBrowserStreamInput,
+  success: RemoteBrowserFrame,
+  error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsPreviewOpenRpc = Rpc.make(WS_METHODS.previewOpen, {
   payload: PreviewOpenInput,
   success: PreviewSessionSnapshot,
@@ -1830,6 +1870,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsTerminalCloseRpc,
   WsSubscribeTerminalEventsRpc,
   WsSubscribeTerminalMetadataRpc,
+  WsRemoteBrowserInfoRpc,
+  WsRemoteBrowserProfileRpc,
+  WsRemoteBrowserControlRpc,
+  WsRemoteBrowserInputRpc,
+  WsRemoteBrowserFramesRpc,
   WsPreviewOpenRpc,
   WsPreviewNavigateRpc,
   WsPreviewResizeRpc,

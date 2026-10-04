@@ -1,10 +1,9 @@
 /**
  * Preview - Schemas for the in-app browser preview surface.
  *
- * The preview is desktop-only (Chromium <webview>); the server tracks per-thread
- * tab metadata so it survives client reconnects and multi-window. The desktop
- * renderer mediates: it owns the actual <webview> and reports navigation back to
- * the server via these RPCs, the server fans events to all subscribers.
+ * Tabs belong to either the desktop client or the environment's browser.
+ * The server tracks their thread ownership and distributes navigation state
+ * to every client; environment tabs also expose a stream to web and desktop.
  *
  * @module Preview
  */
@@ -162,6 +161,10 @@ export const PreviewNavStatus = Schema.Union([
 ]);
 export type PreviewNavStatus = typeof PreviewNavStatus.Type;
 
+/** The physical owner is fixed at open; a viewer never owns a remote tab. */
+export const PreviewBrowserHost = Schema.Literals(["client", "environment"]);
+export type PreviewBrowserHost = typeof PreviewBrowserHost.Type;
+
 export const PreviewSessionSnapshot = Schema.Struct({
   threadId: TrimmedNonEmptyString,
   tabId: PreviewTabId,
@@ -176,6 +179,8 @@ export const PreviewSessionSnapshot = Schema.Struct({
    * switching would require tearing the guest down and losing page state.
    */
   profileId: Schema.optional(BrowserProfileId),
+  /** Older snapshots belong to the Electron client. */
+  host: Schema.optional(PreviewBrowserHost),
   updatedAt: Schema.String,
 });
 export type PreviewSessionSnapshot = typeof PreviewSessionSnapshot.Type;
@@ -184,6 +189,8 @@ export const PreviewOpenInput = Schema.Struct({
   threadId: ThreadId,
   /** Omit to create an empty (Idle) tab the user can type into. */
   url: Schema.optional(Url),
+  /** Signed asset path resolved by the environment browser against its own listener. */
+  assetRelativeUrl: Schema.optional(Url),
   /**
    * Initial viewport for the new tab. Omitting it keeps the historical
    * fill-panel behaviour; clients that have a configured default send it here
@@ -193,6 +200,7 @@ export const PreviewOpenInput = Schema.Struct({
   viewport: Schema.optional(PreviewViewportSetting),
   /** Omit to open under the client's configured default profile. */
   profileId: Schema.optional(BrowserProfileId),
+  host: Schema.optional(PreviewBrowserHost),
 });
 export type PreviewOpenInput = typeof PreviewOpenInput.Type;
 
@@ -350,5 +358,34 @@ export class PreviewInvalidUrlError extends Schema.TaggedError<PreviewInvalidUrl
   }
 }
 
-export const PreviewError = Schema.Union([PreviewSessionLookupError, PreviewInvalidUrlError]);
+export class PreviewRemoteBrowserError extends Schema.TaggedError<PreviewRemoteBrowserError>()(
+  "PreviewRemoteBrowserError",
+  {
+    reason: Schema.Literals(["unavailable", "busy", "failed", "profile", "unsupported", "input"]),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "unavailable":
+        return "The browser on this host is unavailable. Install Chromium or configure T3CODE_BROWSER_EXECUTABLE_PATH.";
+      case "busy":
+        return "Another viewer controls this browser. Release control before continuing.";
+      case "profile":
+        return "This browser profile does not exist on the selected host.";
+      case "unsupported":
+        return "This operation is not supported by the remote browser.";
+      case "input":
+        return "The remote browser input is invalid.";
+      default:
+        return "The remote browser operation failed. Its result may be unknown; it was not retried.";
+    }
+  }
+}
+
+export const PreviewError = Schema.Union([
+  PreviewSessionLookupError,
+  PreviewInvalidUrlError,
+  PreviewRemoteBrowserError,
+]);
 export type PreviewError = typeof PreviewError.Type;

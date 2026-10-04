@@ -1,3 +1,9 @@
+vi.mock("./BrowserOpenDialog", () => ({
+  chooseBrowserHost: vi.fn(async (_threadRef: unknown, profileId?: string) => ({
+    host: "client",
+    profileId,
+  })),
+}));
 import {
   DEFAULT_BROWSER_PROFILE_ID,
   DEFAULT_CLIENT_SETTINGS,
@@ -52,6 +58,7 @@ describe("addBrowserSurface", () => {
     });
 
     expect(openPreview).toHaveBeenCalledWith({
+      host: "client",
       threadId: "thread-1",
       viewport: FILL_PREVIEW_VIEWPORT,
       profileId: "profile-work",
@@ -68,6 +75,7 @@ describe("addBrowserSurface", () => {
     await addBrowserSurface({ threadRef, openPreview: ({ input }) => openPreview(input) });
 
     expect(openPreview).toHaveBeenCalledWith({
+      host: "client",
       threadId: "thread-1",
       viewport: FILL_PREVIEW_VIEWPORT,
       profileId: DEFAULT_BROWSER_PROFILE_ID,

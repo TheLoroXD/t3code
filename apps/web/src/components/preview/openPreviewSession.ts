@@ -1,3 +1,5 @@
+import { browserHostPreference } from "~/browser/browserHostPreferences";
+import type { PreviewBrowserHost } from "@t3tools/contracts";
 import type {
   EnvironmentId,
   PreviewOpenInput,
@@ -27,7 +29,8 @@ interface OpenPreviewSessionInput<E> {
   /** Overrides the configured default; automation passes an explicit size. */
   viewport?: PreviewViewportSetting;
   /** Overrides the configured default profile. */
-  profileId?: string;
+  profileId?: string | undefined;
+  host?: PreviewBrowserHost;
 }
 
 export async function openPreviewSession<E>(
@@ -41,13 +44,19 @@ export async function openPreviewSession<E>(
   if (defaults instanceof BrowserSettingsReadError) {
     return AsyncResult.failure(Cause.fail(defaults));
   }
+  const choice = browserHostPreference(input.threadRef.environmentId);
+  const host = input.host ?? choice.host;
+  const profileId =
+    input.profileId ??
+    (host === "environment" ? choice.profileId : browserDefaultOpenProfileId(defaults));
   const result = await input.openPreview({
     environmentId: input.threadRef.environmentId,
     input: {
       threadId: input.threadRef.threadId,
       ...(input.url === undefined ? {} : { url: input.url }),
       viewport: input.viewport ?? browserDefaultOpenViewport(defaults),
-      profileId: input.profileId ?? browserDefaultOpenProfileId(defaults),
+      host,
+      ...(profileId === undefined ? {} : { profileId }),
     },
   });
   if (result._tag === "Failure") {
