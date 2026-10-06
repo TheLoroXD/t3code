@@ -19,6 +19,7 @@ import {
   reconcilePreviewServerSessions,
   rememberPreviewUrl,
   resetPreviewStateForTests,
+  resetPreviewServerEpoch,
   setActivePreviewTab,
   updatePreviewServerSnapshot,
 } from "./previewStateStore";
@@ -58,6 +59,36 @@ const applyPreviewServerEvent = (eventRef: typeof ref, event: PreviewEventDraft)
 beforeEach(() => {
   nextServerRevision = 0;
   resetPreviewStateForTests();
+});
+
+it("drops a restarted server's desktop pages without resetting another environment", () => {
+  const remoteRef = scopeThreadRef("remote" as EnvironmentId, ref.threadId);
+  reconcilePreviewServerSessions(ref, {
+    serverEpoch,
+    revision: 1,
+    sessions: [makeSnapshot()],
+  });
+  reconcilePreviewServerSessions(otherRef, {
+    serverEpoch,
+    revision: 1,
+    sessions: [makeSnapshot({ threadId: otherRef.threadId, tabId: "background" })],
+  });
+  reconcilePreviewServerSessions(remoteRef, {
+    serverEpoch,
+    revision: 1,
+    sessions: [makeSnapshot({ tabId: "remote-tab" })],
+  });
+
+  expect(resetPreviewServerEpoch(environmentId, "server-b")).toEqual([ref, otherRef]);
+  expect(readThreadPreviewState(ref)).toMatchObject({
+    sessions: {},
+    serverEpoch: "server-b",
+    serverRevision: 0,
+    listLoaded: false,
+  });
+  expect(readThreadPreviewState(otherRef).sessions).toEqual({});
+  expect(readThreadPreviewState(ref).recentlySeenUrls).toEqual(["http://localhost:5173/"]);
+  expect(readThreadPreviewState(remoteRef).snapshot?.tabId).toBe("remote-tab");
 });
 
 describe("previewStateStore (single-tab)", () => {

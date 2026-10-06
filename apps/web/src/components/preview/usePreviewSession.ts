@@ -43,6 +43,10 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
 
     const reconcileSessions = (result: Atom.Type<typeof sessionsAtom>) => {
       if (!AsyncResult.isSuccess(result)) return;
+      const currentEpoch = readThreadPreviewState(threadRef).serverEpoch;
+      // The desktop host can observe the new server before this list finishes refreshing.
+      if (result.waiting && currentEpoch !== null && result.value.serverEpoch !== currentEpoch)
+        return;
       reconcilePreviewServerSessions(threadRef, result.value);
       if (!result.waiting && !readThreadPreviewState(threadRef).listLoaded) {
         // An event overtook the first list. Retry the authoritative baseline;

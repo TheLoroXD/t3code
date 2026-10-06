@@ -6,10 +6,11 @@
  * is the one place that must enumerate every live preview tab.
  */
 import { useAtomValue } from "@effect/atom-react";
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   type DesktopPreviewColorScheme,
   type DesktopPreviewFavicon,
+  type EnvironmentId,
   type PreviewEvent,
   type PreviewListResult,
   type PreviewSessionSnapshot,
@@ -174,6 +175,27 @@ export function useActivePreviewSessions(): Record<string, ThreadPreviewState> {
 
 export function readThreadPreviewState(ref: ScopedThreadRef): ThreadPreviewState {
   return appAtomRegistry.get(previewStateAtom(scopedThreadKey(ref)));
+}
+
+/** A restarted primary server no longer owns the desktop pages from its previous epoch. */
+export function resetPreviewServerEpoch(
+  environmentId: EnvironmentId,
+  serverEpoch: string,
+): ScopedThreadRef[] {
+  const reset: ScopedThreadRef[] = [];
+  for (const threadKey of changedPreviewThreadKeys) {
+    const ref = parseScopedThreadKey(threadKey);
+    if (!ref || ref.environmentId !== environmentId) continue;
+    const current = readThreadPreviewState(ref);
+    if (current.serverEpoch === null || current.serverEpoch === serverEpoch) continue;
+    updateThreadPreviewState(ref, () => ({
+      ...EMPTY_THREAD_PREVIEW_STATE,
+      serverEpoch,
+      recentlySeenUrls: current.recentlySeenUrls,
+    }));
+    reset.push(ref);
+  }
+  return reset;
 }
 
 export function applyPreviewServerEvent(ref: ScopedThreadRef, event: PreviewEvent): void {
