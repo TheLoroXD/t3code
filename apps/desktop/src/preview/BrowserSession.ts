@@ -9,7 +9,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { requestMacLocationAuthorization } from "../electron/MacLocationAuthorization.ts";
+import { loadMacLocationAuthorization } from "../electron/MacLocationAuthorization.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
 /**
@@ -165,6 +165,12 @@ const encodeScopeForDigest = (scope: string): Uint8Array =>
 export const make = Effect.gen(function* BrowserSessionMake() {
   const crypto = yield* Crypto.Crypto;
   const platform = yield* HostProcessPlatform;
+  const macLocationAuthorization =
+    platform === "darwin"
+      ? yield* Effect.tryPromise(loadMacLocationAuthorization).pipe(
+          Effect.orElseSucceed(() => undefined),
+        )
+      : undefined;
   const sessionsRef = yield* SynchronizedRef.make<ReadonlyMap<string, Session>>(new Map());
 
   const getPartition = Effect.fn("BrowserSession.getPartition")(function* (
@@ -214,14 +220,24 @@ export const make = Effect.gen(function* BrowserSessionMake() {
             ) {
               // Electron's site grant does not request macOS authorization.
               // Chromium waits for that system grant before starting a provider.
-              void requestMacLocationAuthorization().then(callback, () => callback(false));
+              if (!macLocationAuthorization) {
+                callback(false);
+                return;
+              }
+              void macLocationAuthorization.request().then(callback, () => callback(false));
               return;
             }
             callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
           });
-          browserSession.setPermissionCheckHandler((_webContents, permission) =>
-            ALLOWED_PREVIEW_PERMISSIONS.has(permission),
-          );
+          browserSession.setPermissionCheckHandler((_webContents, permission) => {
+            if (permission === "geolocation" && platform === "darwin") {
+              return (
+                ALLOWED_PREVIEW_PERMISSIONS.has(permission) &&
+                (macLocationAuthorization?.isAuthorized() ?? false)
+              );
+            }
+            return ALLOWED_PREVIEW_PERMISSIONS.has(permission);
+          });
           const next = new Map(sessions);
           next.set(partition, browserSession);
           return [browserSession, next] as const;

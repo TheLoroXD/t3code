@@ -7,8 +7,16 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import { beforeEach, vi } from "vite-plus/test";
 
-const { fromPartition, sessions, requestMacLocationAuthorization } = vi.hoisted(() => ({
+const {
+  fromPartition,
+  sessions,
+  loadMacLocationAuthorization,
+  isMacLocationAuthorized,
+  requestMacLocationAuthorization,
+} = vi.hoisted(() => ({
   fromPartition: vi.fn(),
+  loadMacLocationAuthorization: vi.fn(),
+  isMacLocationAuthorized: vi.fn<() => boolean>(),
   requestMacLocationAuthorization: vi.fn<() => Promise<boolean>>(),
   sessions: new Map<
     string,
@@ -28,7 +36,7 @@ vi.mock("electron", () => ({
     fromPartition,
   },
 }));
-vi.mock("../electron/MacLocationAuthorization.ts", () => ({ requestMacLocationAuthorization }));
+vi.mock("../electron/MacLocationAuthorization.ts", () => ({ loadMacLocationAuthorization }));
 
 import * as BrowserSession from "./BrowserSession.ts";
 
@@ -43,7 +51,14 @@ describe("BrowserSession", () => {
   beforeEach(() => {
     sessions.clear();
     fromPartition.mockReset();
+    loadMacLocationAuthorization.mockReset();
+    isMacLocationAuthorized.mockReset();
+    isMacLocationAuthorized.mockReturnValue(false);
     requestMacLocationAuthorization.mockReset();
+    loadMacLocationAuthorization.mockResolvedValue({
+      isAuthorized: isMacLocationAuthorized,
+      request: requestMacLocationAuthorization,
+    });
     fromPartition.mockImplementation((partition: string) => {
       const browserSession = {
         clearCache: vi.fn(() => Promise.resolve()),
@@ -195,6 +210,7 @@ describe("BrowserSession", () => {
           `check handler should deny ${permission}`,
         );
       }
+      assert.strictEqual(loadMacLocationAuthorization.mock.calls.length, 0);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -207,17 +223,22 @@ describe("BrowserSession", () => {
       const browserSessions = yield* BrowserSession.BrowserSession;
       const partition = yield* browserSessions.getPartition("scope-a");
       yield* browserSessions.getSession("scope-a");
-      const requestHandler =
-        sessions.get(partition)?.setPermissionRequestHandler.mock.calls[0]?.[0];
+      const browserSession = sessions.get(partition);
+      const requestHandler = browserSession?.setPermissionRequestHandler.mock.calls[0]?.[0];
+      const checkHandler = browserSession?.setPermissionCheckHandler.mock.calls[0]?.[0];
 
+      assert.isFalse(checkHandler(null, "geolocation") as boolean);
       requestHandler(null, "geolocation", (answer: boolean) => {
         answers.push(answer);
         permission.resolve(answer);
       });
       assert.deepEqual(answers, []);
+      assert.isFalse(checkHandler(null, "geolocation") as boolean);
+      isMacLocationAuthorized.mockReturnValue(granted);
       authorization.resolve(granted);
       assert.equal(yield* Effect.promise(() => permission.promise), granted);
       assert.deepEqual(answers, [granted]);
+      assert.equal(checkHandler(null, "geolocation") as boolean, granted);
     }).pipe(Effect.provide(layerForPlatform("darwin"))),
   );
 
@@ -232,6 +253,43 @@ describe("BrowserSession", () => {
         sessions.get(partition)?.setPermissionRequestHandler.mock.calls[0]?.[0];
       requestHandler(null, "geolocation", permission.resolve);
       assert.isFalse(yield* Effect.promise(() => permission.promise));
+      const checkHandler = sessions.get(partition)?.setPermissionCheckHandler.mock.calls[0]?.[0];
+      assert.isFalse(checkHandler(null, "geolocation") as boolean);
+    }).pipe(Effect.provide(layerForPlatform("darwin"))),
+  );
+
+  it.effect("denies geolocation when the macOS authorization bridge cannot load", () => {
+    loadMacLocationAuthorization.mockRejectedValueOnce(new Error("native API unavailable"));
+    return Effect.gen(function* () {
+      const browserSessions = yield* BrowserSession.BrowserSession;
+      const partition = yield* browserSessions.getPartition("scope-a");
+      yield* browserSessions.getSession("scope-a");
+      const browserSession = sessions.get(partition);
+      const requestHandler = browserSession?.setPermissionRequestHandler.mock.calls[0]?.[0];
+      const checkHandler = browserSession?.setPermissionCheckHandler.mock.calls[0]?.[0];
+      const answer = vi.fn();
+
+      requestHandler(null, "geolocation", answer);
+      assert.deepEqual(answer.mock.calls, [[false]]);
+      assert.isFalse(checkHandler(null, "geolocation") as boolean);
+      assert.isTrue(checkHandler(null, "clipboard-sanitized-write") as boolean);
+      assert.strictEqual(requestMacLocationAuthorization.mock.calls.length, 0);
+    }).pipe(Effect.provide(layerForPlatform("darwin")));
+  });
+
+  it.effect("checks the current macOS grant after revocation and restoration", () =>
+    Effect.gen(function* () {
+      const browserSessions = yield* BrowserSession.BrowserSession;
+      const partition = yield* browserSessions.getPartition("scope-a");
+      yield* browserSessions.getSession("scope-a");
+      const checkHandler = sessions.get(partition)?.setPermissionCheckHandler.mock.calls[0]?.[0];
+
+      for (const granted of [true, false, true]) {
+        isMacLocationAuthorized.mockReturnValue(granted);
+        assert.equal(checkHandler(null, "geolocation") as boolean, granted);
+      }
+      assert.isFalse(checkHandler(null, "midi") as boolean);
+      assert.strictEqual(requestMacLocationAuthorization.mock.calls.length, 0);
     }).pipe(Effect.provide(layerForPlatform("darwin"))),
   );
 

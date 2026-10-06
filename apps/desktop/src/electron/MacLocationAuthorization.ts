@@ -1,4 +1,5 @@
-// @effect-diagnostics globalTimers:off -- Poll CoreLocation only while native consent is pending at Electron's callback boundary.
+import * as Effect from "effect/Effect";
+
 const AUTHORIZATION_NOT_DETERMINED = 0;
 const AUTHORIZATION_AUTHORIZED_ALWAYS = 3;
 const AUTHORIZATION_AUTHORIZED_WHEN_IN_USE = 4;
@@ -7,7 +8,7 @@ const AUTHORIZATION_TIMEOUT_MS = 120_000;
 const isAuthorized = (status: number) =>
   status === AUTHORIZATION_AUTHORIZED_ALWAYS || status === AUTHORIZATION_AUTHORIZED_WHEN_IN_USE;
 
-const loadAuthorizationApi = async () => {
+const createAuthorizationApi = async () => {
   const { DataType, load, open } = await import("ffi-rs");
   const library = "t3-location-objc";
   open({
@@ -44,58 +45,58 @@ const loadAuthorizationApi = async () => {
   const statusSelector = selector("authorizationStatus");
   const requestSelector = selector("requestWhenInUseAuthorization");
 
+  const getStatus = () =>
+    load({
+      library,
+      funcName: "objc_msgSend",
+      retType: DataType.I32,
+      paramsType: [DataType.BigInt, DataType.BigInt],
+      paramsValue: [manager, statusSelector],
+    });
+  let pendingAuthorization: Promise<boolean> | undefined;
+
   // CLLocationManager must stay alive and run on Electron's main thread while
   // the system consent dialog is pending. ffi-rs calls are synchronous here.
   return {
-    getStatus: () =>
-      load({
-        library,
-        funcName: "objc_msgSend",
-        retType: DataType.I32,
-        paramsType: [DataType.BigInt, DataType.BigInt],
-        paramsValue: [manager, statusSelector],
-      }),
-    request: () =>
-      load({
-        library,
-        funcName: "objc_msgSend",
-        retType: DataType.Void,
-        paramsType: [DataType.BigInt, DataType.BigInt],
-        paramsValue: [manager, requestSelector],
-      }),
+    isAuthorized: () => {
+      try {
+        return isAuthorized(getStatus());
+      } catch {
+        return false;
+      }
+    },
+    request: (): Promise<boolean> => {
+      pendingAuthorization ??= Effect.runPromise(
+        Effect.gen(function* () {
+          let status = getStatus();
+          if (status !== AUTHORIZATION_NOT_DETERMINED) return isAuthorized(status);
+          load({
+            library,
+            funcName: "objc_msgSend",
+            retType: DataType.Void,
+            paramsType: [DataType.BigInt, DataType.BigInt],
+            paramsValue: [manager, requestSelector],
+          });
+          do {
+            yield* Effect.sleep(250);
+            status = getStatus();
+          } while (status === AUTHORIZATION_NOT_DETERMINED);
+          return isAuthorized(status);
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: AUTHORIZATION_TIMEOUT_MS,
+            orElse: () => Effect.succeed(false),
+          }),
+        ),
+      ).finally(() => {
+        pendingAuthorization = undefined;
+      });
+      return pendingAuthorization;
+    },
   };
 };
 
-let authorizationApi: ReturnType<typeof loadAuthorizationApi> | undefined;
-let pendingAuthorization: Promise<boolean> | undefined;
+let authorizationApi: ReturnType<typeof createAuthorizationApi> | undefined;
 
-export const requestMacLocationAuthorization = (): Promise<boolean> => {
-  pendingAuthorization ??= (authorizationApi ??= loadAuthorizationApi())
-    .then((api) => {
-      const status = api.getStatus();
-      if (status !== AUTHORIZATION_NOT_DETERMINED) return isAuthorized(status);
-      api.request();
-      return new Promise<boolean>((resolve, reject) => {
-        const finish = (granted: boolean) => {
-          clearInterval(interval);
-          clearTimeout(timeout);
-          resolve(granted);
-        };
-        const interval = setInterval(() => {
-          try {
-            const nextStatus = api.getStatus();
-            if (nextStatus !== AUTHORIZATION_NOT_DETERMINED) finish(isAuthorized(nextStatus));
-          } catch (cause) {
-            clearInterval(interval);
-            clearTimeout(timeout);
-            reject(cause);
-          }
-        }, 250);
-        const timeout = setTimeout(() => finish(false), AUTHORIZATION_TIMEOUT_MS);
-      });
-    })
-    .finally(() => {
-      pendingAuthorization = undefined;
-    });
-  return pendingAuthorization;
-};
+/** Loads the native status reader without prompting for access. */
+export const loadMacLocationAuthorization = () => (authorizationApi ??= createAuthorizationApi());
