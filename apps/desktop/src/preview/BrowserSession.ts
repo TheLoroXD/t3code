@@ -8,6 +8,8 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { requestMacLocationAuthorization } from "../electron/MacLocationAuthorization.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
 /**
@@ -162,6 +164,7 @@ const encodeScopeForDigest = (scope: string): Uint8Array =>
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* BrowserSessionMake() {
   const crypto = yield* Crypto.Crypto;
+  const platform = yield* HostProcessPlatform;
   const sessionsRef = yield* SynchronizedRef.make<ReadonlyMap<string, Session>>(new Map());
 
   const getPartition = Effect.fn("BrowserSession.getPartition")(function* (
@@ -204,6 +207,16 @@ export const make = Effect.gen(function* BrowserSessionMake() {
           // (#5002). Re-setting the unchanged native string is harmless, so it
           // is the rewritten string itself that trips the check.
           browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+            if (
+              permission === "geolocation" &&
+              platform === "darwin" &&
+              ALLOWED_PREVIEW_PERMISSIONS.has(permission)
+            ) {
+              // Electron's site grant does not request macOS authorization.
+              // Chromium waits for that system grant before starting a provider.
+              void requestMacLocationAuthorization().then(callback, () => callback(false));
+              return;
+            }
             callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
           });
           browserSession.setPermissionCheckHandler((_webContents, permission) =>
