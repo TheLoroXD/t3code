@@ -16,6 +16,7 @@ import {
   cancelPreviewSessionClose,
   previewStateAtom,
   readThreadPreviewState,
+  reconcilePreviewEnvironmentSessions,
   reconcilePreviewServerSessions,
   rememberPreviewUrl,
   resetPreviewStateForTests,
@@ -89,6 +90,68 @@ it("drops a restarted server's desktop pages without resetting another environme
   expect(readThreadPreviewState(otherRef).sessions).toEqual({});
   expect(readThreadPreviewState(ref).recentlySeenUrls).toEqual(["http://localhost:5173/"]);
   expect(readThreadPreviewState(remoteRef).snapshot?.tabId).toBe("remote-tab");
+});
+
+it("hydrates unseen threads and reconciles missing tabs without overwriting newer events", () => {
+  const remoteRef = scopeThreadRef("remote" as EnvironmentId, ref.threadId);
+  reconcilePreviewServerSessions(remoteRef, {
+    serverEpoch,
+    revision: 1,
+    sessions: [makeSnapshot({ tabId: "remote-tab" })],
+  });
+  reconcilePreviewEnvironmentSessions(environmentId, {
+    serverEpoch,
+    revision: 1,
+    sessions: [makeSnapshot(), makeSnapshot({ threadId: otherRef.threadId, tabId: "background" })],
+  });
+  expect(readThreadPreviewState(otherRef).snapshot?.tabId).toBe("background");
+  applyPreviewServerEventImpl(ref, {
+    type: "opened",
+    serverEpoch,
+    revision: 3,
+    threadId: ref.threadId,
+    tabId: "newer-tab",
+    snapshot: makeSnapshot({ tabId: "newer-tab" }),
+    createdAt: "2026-10-06T00:00:00.000Z",
+  });
+  reconcilePreviewEnvironmentSessions(environmentId, {
+    serverEpoch,
+    revision: 2,
+    sessions: [makeSnapshot()],
+  });
+  expect(readThreadPreviewState(ref).snapshot?.tabId).toBe("newer-tab");
+  expect(readThreadPreviewState(otherRef).sessions).toEqual({});
+  expect(readThreadPreviewState(remoteRef).snapshot?.tabId).toBe("remote-tab");
+});
+
+it("requests another baseline when a live event overtakes the first environment list", () => {
+  const live = makeSnapshot({ tabId: "live-tab" });
+  applyPreviewServerEventImpl(ref, {
+    type: "opened",
+    serverEpoch,
+    revision: 2,
+    threadId: ref.threadId,
+    tabId: live.tabId,
+    snapshot: live,
+    createdAt: live.updatedAt,
+  });
+  expect(
+    reconcilePreviewEnvironmentSessions(environmentId, {
+      serverEpoch,
+      revision: 1,
+      sessions: [makeSnapshot()],
+    }),
+  ).toBe(false);
+  expect(readThreadPreviewState(ref).sessions).toEqual({ "live-tab": live });
+  expect(
+    reconcilePreviewEnvironmentSessions(environmentId, {
+      serverEpoch,
+      revision: 2,
+      sessions: [makeSnapshot(), live],
+    }),
+  ).toBe(true);
+  expect(Object.keys(readThreadPreviewState(ref).sessions)).toEqual(["tab_a", "live-tab"]);
+  expect(readThreadPreviewState(ref).listLoaded).toBe(true);
 });
 
 describe("previewStateStore (single-tab)", () => {

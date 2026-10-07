@@ -4,31 +4,48 @@ import { ThreadId, type EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { isElectron } from "~/env";
-import { applyPreviewServerEvent, resetPreviewServerEpoch } from "~/previewStateStore";
+import {
+  applyPreviewServerEvent,
+  reconcilePreviewEnvironmentSessions,
+  resetPreviewServerEpoch,
+} from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
 
 const inactiveAtom = Atom.make(() => undefined);
 const desktopBrowserSessionsAtom = Atom.family((environmentId: EnvironmentId) => {
   const eventsAtom = previewEnvironment.events({ environmentId, input: {} });
+  const sessionsAtom = previewEnvironment.list({ environmentId, input: {} });
   return Atom.make((get) => {
+    let disposed = false;
     let serverEpoch: string | null = null;
+    get.addFinalizer(() => {
+      disposed = true;
+    });
+    get.subscribe(eventsAtom, (result) => {
+      if (!AsyncResult.isSuccess(result)) return;
+      const event = result.value;
+      if (serverEpoch !== event.serverEpoch) {
+        resetPreviewServerEpoch(environmentId, event.serverEpoch);
+        get.refresh(sessionsAtom);
+        serverEpoch = event.serverEpoch;
+      }
+      applyPreviewServerEvent(scopeThreadRef(environmentId, ThreadId.make(event.threadId)), event);
+    });
+    // List queries re-run when the connection changes. Hydrate all existing tabs
+    // as well as live events, including ones opened before the renderer attached.
+    get.refresh(sessionsAtom);
     get.subscribe(
-      eventsAtom,
+      sessionsAtom,
       (result) => {
-        if (!AsyncResult.isSuccess(result)) return;
-        const event = result.value;
-        if (serverEpoch !== event.serverEpoch) {
-          for (const threadRef of resetPreviewServerEpoch(environmentId, event.serverEpoch)) {
-            get.refresh(
-              previewEnvironment.list({ environmentId, input: { threadId: threadRef.threadId } }),
-            );
-          }
-          serverEpoch = event.serverEpoch;
+        if (!AsyncResult.isSuccess(result) || result.waiting) return;
+        serverEpoch = result.value.serverEpoch;
+        if (!reconcilePreviewEnvironmentSessions(environmentId, result.value)) {
+          // An event may have arrived after the first list was read. Fetch a
+          // complete baseline before considering that thread's index ready.
+          queueMicrotask(() => {
+            if (!disposed) get.refresh(sessionsAtom);
+          });
         }
-        applyPreviewServerEvent(
-          scopeThreadRef(environmentId, ThreadId.make(event.threadId)),
-          event,
-        );
       },
       { immediate: true },
     );

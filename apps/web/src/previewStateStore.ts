@@ -6,7 +6,11 @@
  * is the one place that must enumerate every live preview tab.
  */
 import { useAtomValue } from "@effect/atom-react";
-import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import {
+  parseScopedThreadKey,
+  scopeThreadRef,
+  scopedThreadKey,
+} from "@t3tools/client-runtime/environment";
 import {
   type DesktopPreviewColorScheme,
   type DesktopPreviewFavicon,
@@ -15,6 +19,7 @@ import {
   type PreviewListResult,
   type PreviewSessionSnapshot,
   type ScopedThreadRef,
+  ThreadId,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
@@ -323,6 +328,34 @@ export function updatePreviewServerSnapshot(
       recentlySeenUrls: rememberSnapshotUrl(current.recentlySeenUrls, snapshot),
     };
   });
+}
+
+/** Reconcile one environment; return false if an event overtook its first authoritative list. */
+export function reconcilePreviewEnvironmentSessions(
+  environmentId: EnvironmentId,
+  result: PreviewListResult,
+): boolean {
+  const sessionsByThread = new Map<ThreadId, PreviewSessionSnapshot[]>();
+  for (const threadKey of changedPreviewThreadKeys) {
+    const ref = parseScopedThreadKey(threadKey);
+    if (ref?.environmentId === environmentId) sessionsByThread.set(ref.threadId, []);
+  }
+  for (const snapshot of result.sessions) {
+    const threadId = ThreadId.make(snapshot.threadId);
+    const sessions = sessionsByThread.get(threadId) ?? [];
+    sessions.push(snapshot);
+    sessionsByThread.set(threadId, sessions);
+  }
+  let listLoaded = true;
+  for (const [threadId, sessions] of sessionsByThread) {
+    const ref = scopeThreadRef(environmentId, threadId);
+    reconcilePreviewServerSessions(ref, {
+      ...result,
+      sessions,
+    });
+    if (!readThreadPreviewState(ref).listLoaded) listLoaded = false;
+  }
+  return listLoaded;
 }
 
 /**

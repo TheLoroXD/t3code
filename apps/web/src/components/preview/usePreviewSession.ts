@@ -6,12 +6,14 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 
+import { isElectron } from "~/env";
 import {
   applyPreviewServerEvent,
   readThreadPreviewState,
   reconcilePreviewServerSessions,
 } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
+import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 
 class PreviewSessionThreadKeyParseError extends Schema.TaggedError<PreviewSessionThreadKeyParseError>()(
   "PreviewSessionThreadKeyParseError",
@@ -38,6 +40,8 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
   });
 
   return Atom.make((get) => {
+    const hostAppliesEvents =
+      isElectron && threadRef.environmentId === get(primaryEnvironmentIdAtom);
     let disposed = false;
     let eventsVersion = 0;
 
@@ -64,7 +68,8 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
         get.refresh(sessionsAtom);
         return;
       }
-      applyPreviewServerEvent(threadRef, result.value);
+      // The persistent host already applies this desktop's primary-server events.
+      if (!hostAppliesEvents) applyPreviewServerEvent(threadRef, result.value);
     };
 
     get.addFinalizer(() => {
