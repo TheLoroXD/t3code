@@ -48,8 +48,13 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
     const reconcileSessions = (result: Atom.Type<typeof sessionsAtom>) => {
       if (!AsyncResult.isSuccess(result)) return;
       const currentEpoch = readThreadPreviewState(threadRef).serverEpoch;
-      // The desktop host can observe the new server before this list finishes refreshing.
-      if (result.waiting && currentEpoch !== null && result.value.serverEpoch !== currentEpoch)
+      // The desktop host owns epoch changes, including when a retired query finishes late.
+      // Other environments adopt their new epoch from the completed thread list.
+      if (
+        currentEpoch !== null &&
+        result.value.serverEpoch !== currentEpoch &&
+        (hostAppliesEvents || result.waiting)
+      )
         return;
       reconcilePreviewServerSessions(threadRef, result.value);
       if (!result.waiting && !readThreadPreviewState(threadRef).listLoaded) {

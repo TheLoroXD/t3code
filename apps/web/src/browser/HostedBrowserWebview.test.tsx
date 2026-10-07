@@ -9,7 +9,8 @@ import {
   type PreviewListResult,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { Effect } from "effect";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -48,8 +49,11 @@ vi.mock("~/state/primaryEnvironment", async () => {
 vi.mock("~/state/preview", () => ({
   previewEnvironment: {
     events: ({ environmentId }: { environmentId: string }) => previewEventsFor(environmentId),
-    list: ({ input }: { input: { threadId?: string } }) =>
-      input.threadId === undefined ? previewList : Atom.make(AsyncResult.initial()),
+    list: ({ environmentId, input }: { environmentId: string; input: { threadId?: string } }) => {
+      if (input.threadId === undefined) return previewList;
+      const ref = scopeThreadRef(EnvironmentId.make(environmentId), ThreadId.make(input.threadId));
+      return threadListQueries.get(scopedThreadKey(ref)) ?? threadListValues(scopedThreadKey(ref));
+    },
   },
 }));
 
@@ -80,6 +84,10 @@ const previewEvents = new Map<
   Atom.Writable<AsyncResult.AsyncResult<PreviewEvent>, AsyncResult.AsyncResult<PreviewEvent>>
 >();
 const previewList = Atom.make<AsyncResult.AsyncResult<PreviewListResult>>(AsyncResult.initial());
+const threadListValues = Atom.family((_threadKey: string) =>
+  Atom.make<AsyncResult.AsyncResult<PreviewListResult>>(AsyncResult.initial()),
+);
+const threadListQueries = new Map<string, Atom.Atom<AsyncResult.AsyncResult<PreviewListResult>>>();
 function previewEventsFor(environmentId: string) {
   let atom = previewEvents.get(environmentId);
   if (!atom) {
@@ -103,6 +111,7 @@ function deferred<A>() {
 
 beforeEach(() => {
   resetPreviewStateForTests();
+  threadListQueries.clear();
   appAtomRegistry.set(previewList, AsyncResult.initial());
   for (const atom of previewEvents.values()) appAtomRegistry.set(atom, AsyncResult.initial());
   __resetClientSettingsPersistenceForTests();
@@ -137,7 +146,7 @@ beforeEach(() => {
 });
 
 describe("Electron browser hosting outside the selected thread", () => {
-  it("applies primary events once while a chat sync is mounted and still syncs remote threads", async () => {
+  it("applies primary events once and ignores retired lists while remote epochs advance", async () => {
     const local = {
       environmentId: EnvironmentId.make("desktop-primary"),
       threadId: ThreadId.make("selected-thread"),
@@ -195,9 +204,113 @@ describe("Electron browser hosting outside the selected thread", () => {
         "selected-tab": opened.snapshot,
       });
       expect(mocks.createTab).toHaveBeenCalledOnce();
+
+      await act(() => {
+        appAtomRegistry.set(
+          threadListValues(scopedThreadKey(local)),
+          AsyncResult.success({
+            serverEpoch: "retired-server",
+            revision: 100,
+            sessions: [{ ...opened.snapshot, tabId: "retired-tab" }],
+          }),
+        );
+      });
+      expect(appAtomRegistry.get(previewStateAtom(scopedThreadKey(local)))).toMatchObject({
+        serverEpoch: opened.serverEpoch,
+        sessions: { "selected-tab": opened.snapshot },
+      });
+      expect(applied).toHaveBeenCalledOnce();
+      expect(mocks.createTab).toHaveBeenCalledOnce();
+
+      const remoteSnapshot = { ...opened.snapshot, tabId: "remote-restarted-tab" };
+      await act(() => {
+        appAtomRegistry.set(
+          threadListValues(scopedThreadKey(remote)),
+          AsyncResult.success({
+            serverEpoch: "restarted-remote-server",
+            revision: 1,
+            sessions: [remoteSnapshot],
+          }),
+        );
+      });
+      expect(appAtomRegistry.get(previewStateAtom(scopedThreadKey(remote)))).toMatchObject({
+        serverEpoch: "restarted-remote-server",
+        sessions: { "remote-restarted-tab": remoteSnapshot },
+      });
     } finally {
       stop();
     }
+  });
+
+  it("refreshes the mounted chat's separate query when the host list adopts a new epoch", async () => {
+    const threadRef = scopeThreadRef(
+      EnvironmentId.make("desktop-primary"),
+      ThreadId.make("epoch-refresh-thread"),
+    );
+    const oldRead = deferred<PreviewListResult>();
+    const freshRead = deferred<PreviewListResult>();
+    let restarted = false;
+    threadListQueries.set(
+      scopedThreadKey(threadRef),
+      Atom.make(() => Effect.promise(() => (restarted ? freshRead.promise : oldRead.promise))),
+    );
+    function ChatSync() {
+      usePreviewSession(threadRef);
+      return null;
+    }
+    mocks.getClientSettings.mockResolvedValue(DEFAULT_CLIENT_SETTINGS);
+    await act(async () => {
+      await ensureClientSettingsHydrated();
+      renderer = create(
+        <AppAtomRegistryProvider>
+          <ElectronBrowserHost />
+          <ChatSync />
+        </AppAtomRegistryProvider>,
+        {
+          createNodeMock: (element) =>
+            element.type === "webview"
+              ? Object.assign(new EventTarget(), { getWebContentsId: () => 45 })
+              : { scrollLeft: 0, scrollTop: 0, scrollTo: () => undefined },
+        },
+      );
+    });
+    const oldSnapshot: PreviewListResult["sessions"][number] = {
+      threadId: threadRef.threadId,
+      tabId: "before-restart",
+      runtime: "server",
+      navStatus: { _tag: "Idle" },
+      canGoBack: false,
+      canGoForward: false,
+      updatedAt: "2026-10-07T00:00:00.000Z",
+    };
+    await act(async () => {
+      oldRead.resolve({ serverEpoch: "server-before", revision: 5, sessions: [oldSnapshot] });
+      await oldRead.promise;
+    });
+    expect(mocks.createTab).toHaveBeenCalledOnce();
+    restarted = true;
+    await act(() => {
+      appAtomRegistry.set(
+        previewList,
+        AsyncResult.success({ serverEpoch: "server-after", revision: 1, sessions: [] }),
+      );
+    });
+    const freshSnapshot = { ...oldSnapshot, tabId: "after-restart" };
+    await act(async () => {
+      freshRead.resolve({ serverEpoch: "server-after", revision: 2, sessions: [freshSnapshot] });
+      await freshRead.promise;
+    });
+    expect(appAtomRegistry.get(previewStateAtom(scopedThreadKey(threadRef)))).toMatchObject({
+      serverEpoch: "server-after",
+      sessions: { "after-restart": freshSnapshot },
+      listLoaded: true,
+    });
+    expect(mocks.createTab).toHaveBeenLastCalledWith(
+      previewRuntimeTabId(threadRef, "server-after", freshSnapshot.tabId),
+      expect.objectContaining({
+        serverTab: { threadId: threadRef.threadId, tabId: freshSnapshot.tabId },
+      }),
+    );
   });
 
   it("attaches existing tabs from the initial list and reconciles a reconnect without events", async () => {

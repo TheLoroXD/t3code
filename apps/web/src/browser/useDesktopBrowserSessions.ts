@@ -21,13 +21,22 @@ const desktopBrowserSessionsAtom = Atom.family((environmentId: EnvironmentId) =>
     get.addFinalizer(() => {
       disposed = true;
     });
+    const adoptServerEpoch = (nextEpoch: string) => {
+      if (serverEpoch === nextEpoch) return;
+      // Mounted chats have separate queries that must not finish from the retired server.
+      for (const threadRef of resetPreviewServerEpoch(environmentId, nextEpoch)) {
+        get.refresh(
+          previewEnvironment.list({ environmentId, input: { threadId: threadRef.threadId } }),
+        );
+      }
+      serverEpoch = nextEpoch;
+    };
     get.subscribe(eventsAtom, (result) => {
       if (!AsyncResult.isSuccess(result)) return;
       const event = result.value;
       if (serverEpoch !== event.serverEpoch) {
-        resetPreviewServerEpoch(environmentId, event.serverEpoch);
+        adoptServerEpoch(event.serverEpoch);
         get.refresh(sessionsAtom);
-        serverEpoch = event.serverEpoch;
       }
       applyPreviewServerEvent(scopeThreadRef(environmentId, ThreadId.make(event.threadId)), event);
     });
@@ -38,7 +47,7 @@ const desktopBrowserSessionsAtom = Atom.family((environmentId: EnvironmentId) =>
       sessionsAtom,
       (result) => {
         if (!AsyncResult.isSuccess(result) || result.waiting) return;
-        serverEpoch = result.value.serverEpoch;
+        adoptServerEpoch(result.value.serverEpoch);
         if (!reconcilePreviewEnvironmentSessions(environmentId, result.value)) {
           // An event may have arrived after the first list was read. Fetch a
           // complete baseline before considering that thread's index ready.
