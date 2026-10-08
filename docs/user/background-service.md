@@ -1,5 +1,12 @@
 # Running T3 Code in the background
 
+For recurring browser work, an operator can set
+`T3CODE_PERSISTENT_AUTOMATION_THREADS` to a comma-separated list of authorized
+thread IDs in the server's environment. Those threads keep a separate automation
+profile across tab closures and server restarts. Other agent threads keep isolated
+storage; incognito remains temporary. Remove a thread from the list to disable
+reuse.
+
 On Linux and macOS, T3 Code can run as a service for your user so you do not need
 to keep a terminal open.
 

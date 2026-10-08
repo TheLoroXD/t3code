@@ -1,6 +1,7 @@
 import * as NodeEvents from "node:events";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import { it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -36,10 +37,11 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     constructor(options: { onContextClose?: (context: BrowserContext) => void }) {
       this.onClose = options.onContextClose;
     }
-    async contextFor() {
+    async contextFor(profileId: string, isolationKey?: string) {
       if (contextFailure) throw contextFailure;
       await contextGate?.promise;
       const context = makeContext(this.onClose);
+      contextSelections.push({ profileId, isolationKey });
       contexts.push(context);
       return context as unknown as BrowserContext;
     }
@@ -147,6 +149,7 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
 }
 
 const contexts: ReturnType<typeof makeContext>[] = [];
+const contextSelections: Array<{ profileId: string; isolationKey?: string }> = [];
 let contextGate: PromiseWithResolvers<void> | null = null;
 type ClipboardBinding = (source: { page: unknown }, text: unknown) => void;
 let clipboardBinding: ClipboardBinding | null = null;
@@ -253,6 +256,7 @@ const viewerInput = (tabId: string, canOperate: boolean) => ({
 
 beforeEach(() => {
   contexts.length = 0;
+  contextSelections.length = 0;
   contextGate = null;
   contextFailure = null;
   desktopTabs.clear();
@@ -260,6 +264,63 @@ beforeEach(() => {
   releasedDesktopTabs.length = 0;
   desktopConnections.length = 0;
 });
+
+it.live(
+  "authorized automation storage survives a tab closing without sharing a human profile",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { browser, broker, tabId } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        yield* manager.close({ threadId: scope.thread.threadId, tabId });
+        expect(contexts[0]!.close).not.toHaveBeenCalled();
+        yield* broker.invoke({
+          scope: asSession("agent-after-restart"),
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        expect(contextSelections).toEqual([
+          { profileId: `automation:${scope.thread.threadId}`, isolationKey: undefined },
+          { profileId: `automation:${scope.thread.threadId}`, isolationKey: undefined },
+        ]);
+        const foreign = yield* broker.invoke({
+          scope: { ...scope, thread: { ...testThread, threadId: ThreadId.make("other-thread") } },
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        expect(contextSelections.at(-1)?.isolationKey).toBeDefined();
+        expect(contextSelections.at(-1)?.profileId).toBe("default");
+        expect(foreign).toBeDefined();
+        const incognito = yield* manager.open({
+          threadId: scope.thread.threadId,
+          runtime: "server",
+          profileId: "incognito",
+          reveal: false,
+          automationOwner: "incognito-agent",
+        });
+        yield* browser.attachViewer(viewerInput(incognito.tabId, false));
+        expect(contextSelections.at(-1)?.profileId).toBe("incognito");
+        expect(contextSelections.at(-1)?.isolationKey).toBeDefined();
+      }),
+    ).pipe(
+      Effect.provide(layer),
+      Effect.provideService(HostProcessEnvironment, {
+        T3CODE_PERSISTENT_AUTOMATION_THREADS: ` ${scope.thread.threadId}, `,
+      }),
+    ),
+);
+
+it.live("automation storage remains disposable without operator authorization", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      yield* manager.close({ threadId: scope.thread.threadId, tabId });
+      expect(contexts[0]!.close).toHaveBeenCalled();
+      expect(contextSelections[0]?.isolationKey).toBeDefined();
+    }),
+  ).pipe(Effect.provide(layer), Effect.provideService(HostProcessEnvironment, {})),
+);
 
 it.live("readiness none responds immediately but takeover input waits for navigation commit", () =>
   Effect.scoped(

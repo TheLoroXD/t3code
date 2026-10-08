@@ -435,6 +435,12 @@ const CLIPBOARD_SCRIPT = `(() => {
 
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
+  // Only operator-authorized threads keep agent storage; human profiles remain separate.
+  const persistentAutomationThreads = new Set(
+    (yield* HostProcessEnvironment).T3CODE_PERSISTENT_AUTOMATION_THREADS?.split(",")
+      .map((id) => id.trim())
+      .filter(Boolean),
+  );
   const manager = yield* PreviewManager.PreviewManager;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const environment = yield* ServerEnvironment.ServerEnvironment;
@@ -706,16 +712,22 @@ const make = Effect.gen(function* () {
       adopted === undefined && (await desktopRenders(snapshot))
         ? await connectDesktop(snapshot)
         : null;
+    const persistentAutomationProfile =
+      snapshot.automationOwner !== undefined &&
+      snapshot.profileId !== INCOGNITO_BROWSER_PROFILE_ID &&
+      persistentAutomationThreads.has(snapshot.threadId)
+        ? `automation:${snapshot.threadId}`
+        : undefined;
     const isolatedContext =
       adopted === undefined &&
       desktop === null &&
-      (snapshot.automationOwner !== undefined ||
+      ((snapshot.automationOwner !== undefined && persistentAutomationProfile === undefined) ||
         snapshot.profileId === INCOGNITO_BROWSER_PROFILE_ID);
     const context =
       adopted?.page.context() ??
       desktop?.page.context() ??
       (await contexts.contextFor(
-        snapshot.profileId ?? "default",
+        persistentAutomationProfile ?? snapshot.profileId ?? "default",
         isolatedContext ? tabKey(snapshot.threadId, snapshot.tabId) : undefined,
       ));
     if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
