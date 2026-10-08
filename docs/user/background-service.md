@@ -7,6 +7,8 @@ profile across tab closures and server restarts. Other agent threads keep isolat
 storage; incognito remains temporary. Remove a thread from the list to disable
 reuse.
 
+Session-only cookies end when the browser restarts, and expired SSO requires login.
+
 On Linux and macOS, T3 Code can run as a service for your user so you do not need
 to keep a terminal open.
 

@@ -102,7 +102,10 @@ describe("ServerBrowserContexts", () => {
       "/test/profiles/work%2Fteam",
       expect.objectContaining({ chromiumSandbox: true, executablePath: "/test/chromium" }),
     );
-    expect(launches.mkdir).toHaveBeenCalledWith("/test/profiles/work%2Fteam", { recursive: true });
+    expect(launches.mkdir).toHaveBeenCalledWith("/test/profiles/work%2Fteam", {
+      recursive: true,
+      mode: 0o700,
+    });
     await pool.close();
     expect(human.close).toHaveBeenCalledTimes(1);
   });
