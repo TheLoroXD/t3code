@@ -149,7 +149,7 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
 }
 
 const contexts: ReturnType<typeof makeContext>[] = [];
-const contextSelections: Array<{ profileId: string; isolationKey?: string }> = [];
+const contextSelections: Array<{ profileId: string; isolationKey: string | undefined }> = [];
 let contextGate: PromiseWithResolvers<void> | null = null;
 type ClipboardBinding = (source: { page: unknown }, text: unknown) => void;
 let clipboardBinding: ClipboardBinding | null = null;
