@@ -1,19 +1,23 @@
 "use client";
 
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
-import { FILL_PREVIEW_VIEWPORT } from "@t3tools/contracts";
+import { AuthPreviewOperateScope, FILL_PREVIEW_VIEWPORT } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { useEffect, useMemo } from "react";
+import { type ComponentProps, useEffect, useMemo, useRef } from "react";
 
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 
 import { isElectron } from "~/env";
 import { useTheme } from "~/hooks/useTheme";
 import { useActivePreviewSessions } from "~/previewStateStore";
+import { previewEnvironment } from "~/state/preview";
+import { useEnvironmentScope } from "~/state/session";
+import { useAtomCommand } from "~/state/use-atom-command";
 
 import { readPreviewAnnotationTheme } from "./annotationTheme";
 import { useBrowserPointerStore } from "./browserPointerStore";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
+import { openUrlInPreview } from "./openFileInPreview";
 import { rendersServerTabNatively } from "./previewRuntime";
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
 
@@ -91,13 +95,39 @@ export function ElectronBrowserHost() {
     });
   }, []);
 
+  // A `target="_blank"` link inside a hosted page opens as another tab of the
+  // same thread, so the page that held the link stays where it is.
+  const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: true });
+  const sessionByRuntimeTabId = useRef(new Map<string, (typeof sessions)[number]>());
+  useEffect(() => {
+    sessionByRuntimeTabId.current = new Map(
+      sessions.map((session) => [session.runtimeTabId, session]),
+    );
+  }, [sessions]);
+  useEffect(() => {
+    const preview = window.desktopBridge?.preview;
+    if (!preview) return;
+    return preview.onOpenLink(({ tabId, url, background }) => {
+      const source = sessionByRuntimeTabId.current.get(tabId);
+      if (!source) return;
+      // The new tab keeps the source tab's profile so its cookies carry over.
+      void openUrlInPreview({
+        threadRef: source.threadRef,
+        url,
+        openPreview,
+        profileId: source.snapshot.profileId,
+        background,
+      });
+    });
+  }, [openPreview]);
+
   if (!isElectron) return null;
   return (
     <div className="contents" data-electron-browser-host>
       {sessions.map(({ threadRef, snapshot, runtimeTabId, pictureInPicture, zoomFactor }) => {
         const url = snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
         return (
-          <HostedBrowserWebview
+          <AuthorizedBrowserWebview
             key={runtimeTabId}
             threadRef={threadRef}
             tabId={snapshot.tabId}
@@ -121,4 +151,12 @@ export function ElectronBrowserHost() {
       })}
     </div>
   );
+}
+
+function AuthorizedBrowserWebview(props: ComponentProps<typeof HostedBrowserWebview>) {
+  const canOperatePreview = useEnvironmentScope(
+    props.threadRef.environmentId,
+    AuthPreviewOperateScope,
+  );
+  return canOperatePreview ? <HostedBrowserWebview {...props} /> : null;
 }

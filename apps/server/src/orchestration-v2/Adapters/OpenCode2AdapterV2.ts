@@ -70,6 +70,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
 import { paginate, type OpenCode2StreamEvent } from "../../provider/opencode2/OpenCode2Client.ts";
 import * as OpenCode2Server from "../../provider/opencode2/OpenCode2Server.ts";
@@ -77,26 +78,29 @@ import {
   parseOpenCodeModelSlug,
   type OpenCodeRuntimeError,
 } from "../../provider/opencodeRuntime.ts";
-import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
-import { t3OrchestrationSystemPrompt } from "../../provider/T3OrchestrationInstructions.ts";
+import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
+import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { getModelSelectionStringOptionValue, modelSelectionsEqual } from "@t3tools/shared/model";
 import { causeErrorTag } from "@t3tools/shared/observability";
 
-import { providerMessageTextWithAttachmentPaths } from "../AttachmentPrompt.ts";
-import * as IdAllocator from "../IdAllocator.ts";
-import { backgroundWorkNotification, type BackgroundWorkReport } from "../Notification.ts";
-import * as ProviderContinuationRequests from "../ProviderContinuationRequests.ts";
-import { makeProviderFailure } from "../ProviderFailure.ts";
+import { providerMessageTextWithAttachmentPaths } from "@t3tools/provider-core/server/attachmentPrompt";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import {
+  backgroundWorkNotification,
+  type BackgroundWorkReport,
+} from "@t3tools/provider-core/server/notification";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/continuationRequests";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
   makeSubagentChildThread,
   makeSubagentConversationArtifacts,
   subagentThreadTitle,
 } from "../SubagentProjection.ts";
-import * as ProviderAdapter from "../ProviderAdapter.ts";
-import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import { OPENCODE_PROVIDER, openCodePermissionRequestKind } from "./OpenCodeAdapterV2.ts";
 import { openCodeToolTurnItem } from "./OpenCodeToolItems.ts";
 
@@ -1786,7 +1790,10 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       const base = {
         type: "turn.terminal" as const,
         driver,
-        providerThreadId: state.providerThread.id,
+        // The provider thread the turn started on. After a native fork the
+        // session's own thread has a fresh id, and the terminal must name the
+        // thread the start was recorded against.
+        providerThreadId: turn.providerTurn.providerThreadId,
         providerTurnId: turn.providerTurn.id,
         runOrdinal: turn.input.runOrdinal,
         threadDisposition,
@@ -2825,12 +2832,13 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
      * reconciles. Retried a few times; the caller fails everything after that.
      */
     const reconnect = Effect.gen(function* () {
+      // Returned on any failure, including the interrupt a closing session
+      // sends a reconnect still in flight, so a spawned server can idle-stop.
       const scope = yield* Scope.make();
-      const next = yield* borrow.pipe(
-        Effect.provideService(Scope.Scope, scope),
-        Effect.tapError(() => Scope.close(scope, Exit.void)),
-      );
-      const stream = yield* next.events.pipe(Effect.tapError(() => Scope.close(scope, Exit.void)));
+      const { next, stream } = yield* Effect.gen(function* () {
+        const next = yield* borrow.pipe(Effect.provideService(Scope.Scope, scope));
+        return { next, stream: yield* next.events };
+      }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       const previous = currentScope;
       connection = next;
       client = next.client;
@@ -3208,7 +3216,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       providerMessageTextWithAttachmentPaths({
         text: turnInput.message.text,
         attachments: turnInput.message.attachments,
-        attachmentsDir: serverConfig.attachmentsDir,
+        resolveAttachmentPath: (attachment) =>
+          resolveAttachmentPath({ attachmentsDir: serverConfig.attachmentsDir, attachment }),
       }).trim();
 
     const removeMcp = (mcp: { readonly name: string; readonly directory: string }) =>
@@ -3889,7 +3898,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               text: providerMessageTextWithAttachmentPaths({
                 text: steerInput.message.text,
                 attachments: steerInput.message.attachments,
-                attachmentsDir: serverConfig.attachmentsDir,
+                resolveAttachmentPath: (attachment) =>
+                  resolveAttachmentPath({
+                    attachmentsDir: serverConfig.attachmentsDir,
+                    attachment,
+                  }),
               }).trim(),
               delivery: "steer",
             })
