@@ -90,6 +90,28 @@ describe("macOS location authorization", () => {
     expect(await authorization.request()).toBe(true);
   });
 
+  it("shares a retry after timeout while authorization is still undetermined", async () => {
+    const first = authorization.request();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(await first).toBe(false);
+    expect(native.status).toBe(0);
+    expect(native.requests).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    const retry = authorization.request();
+    const concurrentRetry = authorization.request();
+    expect(retry).toBe(concurrentRetry);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(native.requests).toBe(2);
+    expect(authorization.isAuthorized()).toBe(false);
+
+    native.status = 4;
+    await vi.advanceTimersByTimeAsync(250);
+    expect(await Promise.all([retry, concurrentRetry])).toEqual([true, true]);
+    expect(authorization.isAuthorized()).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("reflects revocation and restoration without another request", () => {
     native.status = 3;
     expect(authorization.isAuthorized()).toBe(true);

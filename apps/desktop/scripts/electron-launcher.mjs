@@ -363,6 +363,10 @@ function buildMacLauncher(electronBinaryPath) {
     iconMtimeMs: NodeFS.statSync(iconPath).mtimeMs,
     appBundleId: APP_BUNDLE_ID,
     appProtocolSchemes: APP_PROTOCOL_SCHEMES,
+    // Rebuild cached bundles when protected-resource disclosures change.
+    infoPlistStrings: resolveMacBundleInfoPlistStrings(
+      isDevelopment ? developmentPaths.launcherExecutableName : "Electron",
+    ),
   };
 
   const currentMetadata = readJson(metadataPath);
