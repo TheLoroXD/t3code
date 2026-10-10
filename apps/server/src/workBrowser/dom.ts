@@ -114,11 +114,37 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
     row.getAttribute("data-message-id") ??
     row.getAttribute("data-ts") ??
     row.id;
+  const toFields = () =>
+    all("[contenteditable='true'][aria-label='To'], [contenteditable='true'][aria-label='Para']");
+  const recipientName = (row: HTMLElement) =>
+    clean(
+      row.querySelector("[class*='textContainer-']")?.textContent ?? row.getAttribute("aria-label"),
+    );
+  const pendingRecipient = (field: HTMLElement) => {
+    const copy = field.cloneNode(true) as HTMLElement;
+    for (const chip of copy.querySelectorAll("._EType_RECIPIENT_ENTITY")) chip.remove();
+    return clean(copy.textContent)
+      .replace(/[\u200b\ufeff]/g, "")
+      .trim();
+  };
+  const recipientCards = () =>
+    all(
+      "[role='dialog'][aria-label='Profile card'], [role='dialog'][aria-label='Tarjeta de perfil']",
+    );
+  const cardEmails = (card: HTMLElement) =>
+    Array.from(card.querySelectorAll<HTMLElement>("span[title]"))
+      .filter(visible)
+      .filter(
+        (el) => clean(el.textContent).toLowerCase() === el.getAttribute("title")?.toLowerCase(),
+      )
+      .map((el) => el.getAttribute("title") ?? "")
+      .filter((email) => /^[\w.+-]+@[\w.-]+\.[a-z]{2,}$/i.test(email))
+      .map((email) => email.toLowerCase());
 
   if (task === "clickPoint") {
     const locator = String(input.locator);
     if (
-      !/^\[data-work-browser-(search-button|search-submit|new|row|send|calendar-date|calendar-month|calendar-settings|calendar-close)\]$/.test(
+      !/^\[data-work-browser-(search|search-button|search-submit|new|row|to|recipient-row|recipient-details|recipient-close|send|calendar-date|calendar-month|calendar-settings|calendar-close)\]$/.test(
         locator,
       )
     )
@@ -129,9 +155,19 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
     const target = targets[0]!;
     target.scrollIntoView({ behavior: "instant", block: "nearest", inline: "nearest" });
     const rect = target.getBoundingClientRect();
-    const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    // Click the recipient field's empty tail, away from existing recipient chips.
+    const point =
+      locator === "[data-work-browser-to]"
+        ? { x: rect.right - 4, y: rect.bottom - 4 }
+        : { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
     const hit = document.elementFromPoint(point.x, point.y);
-    if (!hit || (hit !== target && !target.contains(hit))) return { ...base, state: "ui_changed" };
+    if (
+      !hit ||
+      (locator === "[data-work-browser-to]"
+        ? hit !== target
+        : hit !== target && !target.contains(hit))
+    )
+      return { ...base, state: "ui_changed" };
     return { ...base, point };
   }
   if (task === "searchButton")
@@ -249,6 +285,57 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
       ),
       "to",
     );
+  if (task === "recipientCount" || task === "recipientRow") {
+    const fields = toFields();
+    const rows =
+      fields.length === 1
+        ? Array.from(fields[0]!.querySelectorAll<HTMLElement>("._EType_RECIPIENT_ENTITY"))
+        : [];
+    if (rows.length !== input.count || fields.length !== 1 || pendingRecipient(fields[0]!))
+      return { ...base, state: "ui_changed" };
+    if (task === "recipientCount") return base;
+    const row = rows[Number(input.index)];
+    return mark(row ? [row] : [], "recipient-row");
+  }
+  if (task === "recipientDetails")
+    return mark(
+      all("[role='menuitem']").filter((el) =>
+        /(Open contact card|Abrir la tarjeta de contacto)$/i.test(clean(el.innerText)),
+      ),
+      "recipient-details",
+    );
+  if (task === "recipientCardClosed")
+    return {
+      ...base,
+      state: recipientCards().some((card) => cardEmails(card).length > 0) ? "ui_changed" : "ready",
+    };
+  if (task === "recipientClose")
+    return mark(
+      recipientCards().flatMap((card) =>
+        Array.from(card.querySelectorAll<HTMLElement>("button"))
+          .filter(visible)
+          .filter((el) =>
+            /^(Close|Cerrar)$/i.test(
+              clean(el.getAttribute("aria-label") ?? el.getAttribute("title") ?? el.innerText),
+            ),
+          ),
+      ),
+      "recipient-close",
+    );
+  if (task === "recipientCard") {
+    const rows = all("[data-work-browser-recipient-row]");
+    const cards = recipientCards().filter((card) => cardEmails(card).length > 0);
+    if (rows.length !== 1 || cards.length !== 1) return { ...base, state: "ui_changed" };
+    const emails = new Set(cardEmails(cards[0]!));
+    if (!rowId(rows[0]!) || !recipientName(rows[0]!)) return { ...base, state: "ui_changed" };
+    if (emails.size !== 1 || !emails.has(String(input.email).toLowerCase()))
+      return { ...base, state: "account_mismatch" };
+    // Bind the address displayed by this chip's contact card to its current identity.
+    rows[0]!.setAttribute("data-work-browser-recipient-email", [...emails][0]!);
+    rows[0]!.setAttribute("data-work-browser-recipient-id", rowId(rows[0]!));
+    rows[0]!.setAttribute("data-work-browser-recipient-name", recipientName(rows[0]!));
+    return base;
+  }
   if (task === "sendButton") {
     const editors = all("[data-work-browser-editor]");
     if (editors.length !== 1 || clean(editors[0]!.innerText) !== String(input.text).trim())
@@ -288,31 +375,36 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
       const senderSet = new Set(senderEmails);
       if (senderSet.size !== 1 || !senderSet.has(String(input.accountEmail).toLowerCase()))
         return { ...base, state: "account_mismatch" };
-      const recipients = Array.from(
-        compose.querySelectorAll<HTMLElement>(
-          "[data-testid='recipient'], [data-email], [role='listitem'][title], [aria-label*='@']",
-        ),
-      )
-        .filter((el) => !senders.some((sender) => sender === el || sender.contains(el)))
-        .map((el) =>
-          `${el.getAttribute("data-email") ?? ""} ${el.getAttribute("title") ?? ""} ${el.getAttribute("aria-label") ?? ""} ${el.innerText}`.toLowerCase(),
-        );
       const expected = input.to as string[];
+      const fields = toFields().filter((el) => compose!.contains(el));
+      if (fields.length !== 1 || pendingRecipient(fields[0]!))
+        return { ...base, state: "ui_changed" };
+      const recipients = Array.from(
+        fields[0]!.querySelectorAll<HTMLElement>("._EType_RECIPIENT_ENTITY"),
+      );
       const emailSet = new Set(
-        recipients.flatMap((value) => value.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/g) ?? []),
+        recipients
+          .filter(
+            (el) =>
+              el.getAttribute("data-work-browser-recipient-id") === rowId(el) &&
+              el.getAttribute("data-work-browser-recipient-name") === recipientName(el),
+          )
+          .map((el) => el.getAttribute("data-work-browser-recipient-email")),
       );
       if (
+        recipients.length !== expected.length ||
         emailSet.size !== expected.length ||
         expected.some((email) => !emailSet.has(email.toLowerCase()))
       )
         return { ...base, state: "account_mismatch" };
       if (
-        all("[data-work-browser-to]").some(
-          (el) =>
-            ((el as HTMLInputElement).value ?? el.innerText).replace(/\u200b/g, "").trim() !== "",
-        )
+        Array.from(
+          compose.querySelectorAll<HTMLElement>(
+            "[contenteditable='true'][aria-label='Cc'], [contenteditable='true'][aria-label='CC'], [contenteditable='true'][aria-label='Bcc'], [contenteditable='true'][aria-label='CCO']",
+          ),
+        ).some((el) => el.querySelector("._EType_RECIPIENT_ENTITY") || pendingRecipient(el))
       )
-        return { ...base, state: "ui_changed" };
+        return { ...base, state: "account_mismatch" };
       return mark(
         namedButtons(/^(Send|Enviar)( \(.+\))?$/i).filter((el) => compose!.contains(el)),
         "send",
@@ -425,7 +517,30 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
       all("[role='progressbar'], [aria-busy='true']").length > 0
     )
       return { ...base, state: "ui_changed" };
-    const bodyText = bodies[0]!.innerText;
+    const body = bodies[0]! as HTMLElement & {
+      workBrowserBodyWait?: { id: string; at: number; observer: MutationObserver };
+    };
+    let wait = body.workBrowserBodyWait;
+    if (!wait || wait.id !== input.id) {
+      wait?.observer.disconnect();
+      const state = { id: String(input.id), at: performance.now() };
+      const observer = new MutationObserver(() => {
+        state.at = performance.now();
+      });
+      observer.observe(body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+      });
+      wait = Object.assign(state, { observer });
+      body.workBrowserBodyWait = wait;
+    }
+    // ponytail: 800 ms of quiet DOM for staged mail bodies; use a loaded marker if Outlook exposes one.
+    if (performance.now() - wait.at < 800) return { ...base, state: "ui_changed" };
+    wait.observer.disconnect();
+    delete body.workBrowserBodyWait;
+    const bodyText = body.innerText;
     base.more = bodyText.trim().length > 16000;
     if (
       !push({

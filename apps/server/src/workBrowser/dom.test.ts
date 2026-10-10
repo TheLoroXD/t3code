@@ -6,9 +6,122 @@ import { PageObservation } from "./schema.ts";
 
 const decodePage = Schema.decodeUnknownSync(PageObservation);
 
+it("checks the actual recipient card and rejects changed identities, pending addresses, or extra Cc", () => {
+  const element = (text = "", attributes: Record<string, string> = {}) => ({
+    innerText: text,
+    textContent: text,
+    getClientRects: () => [{}],
+    getAttribute: (name: string) => attributes[name] ?? null,
+    setAttribute: (name: string, value: string) => {
+      attributes[name] = value;
+    },
+    removeAttribute: (name: string) => {
+      delete attributes[name];
+    },
+  });
+  let cardEmail = "someone@other.example";
+  let name = "Requested recipient";
+  let pending = "";
+  let extraCc = false;
+  let senderEmail = "person@work.example";
+  const chip = {
+    ...element(),
+    id: "chip-1",
+    querySelector: () => element(name),
+  };
+  const field = {
+    ...element(),
+    querySelectorAll: () => [chip],
+    cloneNode: () => ({ textContent: pending, querySelectorAll: () => [] }),
+  };
+  const cc = { querySelector: () => chip };
+  const card = {
+    ...element(),
+    querySelectorAll: () => [element(cardEmail, { title: cardEmail })],
+  };
+  const subject = { ...element(), value: "Expected subject" };
+  const send = element("Send");
+  const sender = {
+    ...element(),
+    getAttribute: (attribute: string) =>
+      attribute === "aria-label" ? `From: ${senderEmail}` : null,
+  };
+  const compose = {
+    contains: (candidate: unknown) =>
+      candidate === subject || candidate === field || candidate === send,
+    querySelectorAll: (selector: string) =>
+      selector.includes("sender-address")
+        ? [sender]
+        : selector.includes("aria-label='Cc'")
+          ? extraCc
+            ? [cc]
+            : []
+          : [send],
+  };
+  const editor = { ...element("Expected body"), parentElement: compose };
+  const document = {
+    body: {},
+    querySelector: () => element("person@work.example"),
+    querySelectorAll: (selector: string) =>
+      selector === "[data-work-browser-editor]"
+        ? [editor]
+        : selector === "[data-work-browser-subject]"
+          ? [subject]
+          : selector === "[data-work-browser-recipient-row]"
+            ? [chip]
+            : selector.includes("[aria-label='To']")
+              ? [field]
+              : selector.includes("Profile card")
+                ? [card]
+                : selector === "button, [role='button']"
+                  ? [send]
+                  : [],
+  };
+  const evaluate = (task: string) =>
+    decodePage(
+      NodeVM.runInNewContext(
+        pageProgram("outlook", task, {
+          accountEmail: "person@work.example",
+          email: "recipient@work.example",
+          to: ["recipient@work.example"],
+          subject: "Expected subject",
+          text: "Expected body",
+        }),
+        {
+          document,
+          location: {
+            href: "https://outlook.cloud.microsoft/mail/",
+            hostname: "outlook.cloud.microsoft",
+          },
+          TextEncoder,
+        },
+      ),
+    );
+  expect(evaluate("recipientCard").state).toBe("account_mismatch");
+  cardEmail = "recipient@work.example";
+  expect(evaluate("recipientCard").state).toBe("ready");
+  expect(evaluate("sendButton").locator).toBe("[data-work-browser-send]");
+  name = "A different recipient";
+  expect(evaluate("sendButton").state).toBe("account_mismatch");
+  name = "Requested recipient";
+  chip.id = "replaced-chip";
+  expect(evaluate("sendButton").state).toBe("account_mismatch");
+  chip.id = "chip-1";
+  pending = "not-resolved@work.example";
+  expect(evaluate("sendButton").state).toBe("ui_changed");
+  pending = "";
+  extraCc = true;
+  expect(evaluate("sendButton").state).toBe("account_mismatch");
+  extraCc = false;
+  senderEmail = "other@work.example";
+  expect(evaluate("sendButton").state).toBe("account_mismatch");
+});
+
 it("reads the current Outlook message body and rejects another mailbox or conversation", () => {
   let email = "person@work.example";
   let selectedId = "conversation-1";
+  let clock = 0;
+  let changed = () => {};
   const element = (text: string, attributes: Record<string, string> = {}) => ({
     innerText: text,
     textContent: text,
@@ -44,10 +157,25 @@ it("reads the current Outlook message body and rejects another mailbox or conver
             hostname: "outlook.cloud.microsoft",
           },
           TextEncoder,
+          performance: { now: () => clock },
+          MutationObserver: class {
+            constructor(callback: () => void) {
+              changed = callback;
+            }
+            observe() {}
+            disconnect() {}
+          },
         },
       ),
     );
-  expect(evaluate().items[0]!.text).toBe("The message itself");
+  expect(evaluate().state).toBe("ui_changed");
+  clock = 700;
+  body.innerText = "The fully rendered message";
+  changed();
+  clock = 1000;
+  expect(evaluate().state).toBe("ui_changed");
+  clock = 1500;
+  expect(evaluate().items[0]!.text).toBe("The fully rendered message");
   selectedId = "conversation-2";
   expect(evaluate().state).toBe("ui_changed");
   email = "someone@other.example";

@@ -33,6 +33,8 @@ account and expire when the server restarts or old references are evicted.
 Search again to refresh them. Results include their source, observation time,
 and `partial`; rendered or truncated results are not a complete export.
 Opening Outlook mail can mark it read. Composing can autosave a draft.
+Slack sends and linked message reads currently use channel URLs; direct-message
+conversations are not supported in this build.
 `browserThreadId` identifies the thread containing the shared work tab. Use
 the work tools for agent actions; the human can open that thread to inspect it.
 
@@ -51,6 +53,11 @@ the app manually. Repeating the operation returns its receipt without clicking
 again. Do not use a different ID to retry an ambiguous send. Different content
 with the same ID is rejected. Receipts contain hashes and status metadata;
 message bodies and credentials are not stored in them.
+
+For Outlook sends, enable **Always show From** in Settings → Mail → Compose.
+The tool checks that sender and each resolved recipient's contact-card address
+before clicking Send. It stops if an address cannot be checked, a recipient
+changes, or the draft contains additional Cc or Bcc recipients.
 
 The calendar tool reads one visible day and requires an ISO date and an IANA
 time zone. It verifies the display zone in calendar settings and uses the date

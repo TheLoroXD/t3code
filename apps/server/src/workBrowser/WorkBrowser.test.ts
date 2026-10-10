@@ -47,7 +47,10 @@ it.effect(
     Effect.scoped(
       Effect.gen(function* () {
         const requests: Array<Broker.PreviewAutomationInvokeInput> = [];
-        const pages = new Map<string, { url: string; profile: string }>();
+        const pages = new Map<
+          string,
+          { url: string; profile: string; searchActive: boolean; query: string; submitted: boolean }
+        >();
         let expired = true;
         let wrongWorkspace = false;
         let crashAfterClick = false;
@@ -63,30 +66,55 @@ it.effect(
                 url === "https://verato.slack.com" ? veratoHome : url;
               if (request.operation === "workOpen") {
                 const tabId = PreviewTabId.make(`work-tab-${pages.size}`);
-                page = { url: redirect(input.url!), profile: input.profileId! };
+                page = {
+                  url: redirect(input.url!),
+                  profile: input.profileId!,
+                  searchActive: false,
+                  query: "",
+                  submitted: false,
+                };
                 pages.set(tabId, page);
                 value = { tabId, available: true };
               } else if (request.operation === "status")
                 value = { available: true, tabId: request.tabId };
-              else if (request.operation === "navigate") page!.url = redirect(input.url!);
+              else if (request.operation === "navigate") {
+                page!.url = redirect(input.url!);
+                page!.searchActive = false;
+                page!.query = "";
+                page!.submitted = false;
+              } else if (request.operation === "click" && Number(input.x) === 9)
+                page!.searchActive = true;
               else if (request.operation === "click" && Number(input.x) === 17) sendClicks++;
+              else if (request.operation === "type" && input.text && page!.url.includes("outlook."))
+                page!.query = page!.searchActive ? input.text : "";
+              else if (request.operation === "press" && input.key === "Enter")
+                page!.submitted = page!.searchActive && page!.query.length > 0;
               else if (request.operation === "evaluate") {
                 if (crashAfterClick && input.expression!.includes(',"sent",'))
                   return Effect.die("connection lost after Send");
                 const rows =
                   input.expression!.includes(',"rows",') ||
                   input.expression!.includes(',"searchRows",');
+                const outlook = page!.url.includes("outlook.");
                 value = {
-                  state: expired ? "auth_required" : "ready",
+                  state: expired
+                    ? "auth_required"
+                    : outlook && rows && !page!.submitted
+                      ? "ui_changed"
+                      : "ready",
                   url: wrongWorkspace ? "https://app.slack.com/client/TOTHER" : page!.url,
                   account:
                     page!.profile === verato.profileId ? verato.accountEmail : onecall.accountEmail,
                   locator: input.expression!.includes(',"sendButton",')
                     ? "[data-work-browser-send]"
-                    : "[data-work-browser-control]",
+                    : outlook && input.expression!.includes(',"searchInput",')
+                      ? "[data-work-browser-search]"
+                      : "[data-work-browser-control]",
                   point: input.expression!.includes('"locator":"[data-work-browser-send]"')
                     ? { x: 17, y: 19 }
-                    : { x: 1, y: 1 },
+                    : input.expression!.includes('"locator":"[data-work-browser-search]"')
+                      ? { x: 9, y: 1 }
+                      : { x: 1, y: 1 },
                   ids: ["message-1"],
                   more: rows,
                   items: rows
@@ -94,7 +122,7 @@ it.effect(
                         {
                           id: "message-1",
                           ref: "",
-                          kind: "message",
+                          kind: outlook ? "mail" : "message",
                           text: "A visible message",
                           author: "Person",
                           subject: null,
@@ -243,6 +271,14 @@ it.effect(
           if (mismatch._tag === "Failure" && isWorkBrowserError(mismatch.failure))
             expect(mismatch.failure.code).toBe("account_mismatch");
           wrongWorkspace = false;
+
+          const mail = yield* service.run({
+            operation: "mailSearch",
+            account: "verato",
+            query: "expected query",
+          });
+          expect(mail.items).toHaveLength(1);
+          expect(mail.items[0]!.kind).toBe("mail");
 
           expired = true;
           const held = yield* service.run({ operation: "status", account: "verato", app: "slack" });

@@ -394,7 +394,8 @@ const make = Effect.gen(function* () {
           }).pipe(
             Effect.retry({
               while: (error) => error.code === "ui_changed",
-              times: wait ? 20 : 0,
+              // Cold Outlook loads can take several seconds after DOMContentLoaded.
+              times: wait ? 50 : 0,
               schedule: Schedule.spaced("200 millis"),
             }),
           );
@@ -440,6 +441,8 @@ const make = Effect.gen(function* () {
               yield* navigate(searchUrl);
             }
             const locator = yield* control("searchInput");
+            // Outlook initializes its search state on click; focus alone drops the first query.
+            if (app === "outlook") yield* clickLocator(locator);
             yield* type(locator, query);
             if (app === "slack") yield* click("searchSubmit", { query });
             else yield* invoke("press", { key: "Enter" });
@@ -597,10 +600,28 @@ const make = Effect.gen(function* () {
                   return yield* fail("invalid_configuration");
                 yield* navigate(configuration.outlookUrl);
                 yield* click("newMail");
-                for (const email of request.to) {
+                for (const [index, email] of request.to.entries()) {
                   const locator = yield* control("recipient");
-                  yield* type(locator, email);
-                  yield* invoke("press", { key: "Enter" });
+                  yield* clickLocator(locator);
+                  yield* invoke("type", { locator, text: "", clear: false });
+                  yield* invoke("press", { key: "ControlOrMeta+End" });
+                  yield* invoke("type", { locator, text: email, clear: false });
+                  // The recipient editor commits on a delimiter key, not insertText's input event.
+                  yield* invoke("press", { key: ";" });
+                  yield* observe("recipientCount", { count: index + 1 });
+                }
+                for (const [index, email] of request.to.entries()) {
+                  const locator = yield* control("recipientRow", {
+                    count: request.to.length,
+                    index,
+                  });
+                  const page = yield* observe("clickPoint", { locator }, false);
+                  if (!page.point) return yield* fail("ui_changed");
+                  yield* invoke("click", { ...page.point, button: "right" });
+                  yield* click("recipientDetails");
+                  yield* observe("recipientCard", { email });
+                  yield* click("recipientClose");
+                  yield* observe("recipientCardClosed");
                 }
                 yield* fill("subject", request.subject);
               }
