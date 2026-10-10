@@ -8,7 +8,7 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { loadMacLocationAuthorization } from "../electron/MacLocationAuthorization.ts";
 
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
@@ -216,7 +216,7 @@ const previewHostWindow = (guest: WebContents | null): BrowserWindow | undefined
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* BrowserSessionMake() {
   const crypto = yield* Crypto.Crypto;
-  const platform = yield* HostProcessPlatform;
+  const platform = yield* HostProcess.Platform;
   const macLocationAuthorization =
     platform === "darwin"
       ? yield* Effect.tryPromise(loadMacLocationAuthorization).pipe(

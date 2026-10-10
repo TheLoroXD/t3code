@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -61,7 +61,7 @@ const layerDialog = Layer.succeed(ElectronDialog.ElectronDialog, {
 const layerForPlatform = (platform: NodeJS.Platform) =>
   BrowserSession.layer.pipe(
     Layer.provide(Layer.merge(NodeServices.layer, layerDialog)),
-    Layer.provide(Layer.succeed(HostProcessPlatform, platform)),
+    Layer.provide(Layer.succeed(HostProcess.Platform, platform)),
   );
 const layer = layerForPlatform("linux");
 
