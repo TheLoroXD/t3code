@@ -69,7 +69,7 @@ it.effect(
               } else if (request.operation === "status")
                 value = { available: true, tabId: request.tabId };
               else if (request.operation === "navigate") page!.url = redirect(input.url!);
-              else if (request.operation === "click" && input.locator?.includes("send"))
+              else if (request.operation === "click" && Number(input.x) === 17)
                 sendClicks++;
               else if (request.operation === "evaluate") {
                 if (crashAfterClick && input.expression!.includes(',"sent",'))
@@ -85,6 +85,9 @@ it.effect(
                   locator: input.expression!.includes(',"sendButton",')
                     ? "[data-work-browser-send]"
                     : "[data-work-browser-control]",
+                  point: input.expression!.includes('"locator":"[data-work-browser-send]"')
+                    ? { x: 17, y: 19 }
+                    : { x: 1, y: 1 },
                   ids: ["message-1"],
                   more: rows,
                   items: rows

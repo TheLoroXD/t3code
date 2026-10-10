@@ -103,6 +103,22 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
     row.getAttribute("data-ts") ??
     row.id;
 
+  if (task === "clickPoint") {
+    const locator = String(input.locator);
+    if (!/^\[data-work-browser-(search-button|search-submit|new|row|send)\]$/.test(locator))
+      return { ...base, state: "ui_changed" };
+    const targets = all(locator);
+    if (targets.length !== 1 || targets[0]!.matches(":disabled, [aria-disabled='true']"))
+      return { ...base, state: "ui_changed" };
+    const target = targets[0]!;
+    target.scrollIntoView({ behavior: "instant", block: "nearest", inline: "nearest" });
+    const rect = target.getBoundingClientRect();
+    const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    const hit = document.elementFromPoint(point.x, point.y);
+    if (!hit || (hit !== target && !target.contains(hit)))
+      return { ...base, state: "ui_changed" };
+    return { ...base, point };
+  }
   if (task === "searchButton")
     return mark(all("button[data-qa='top_nav_search']"), "search-button");
   if (task === "searchSubmit")

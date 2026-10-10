@@ -6,6 +6,42 @@ import { PageObservation } from "./schema.ts";
 
 const decodePage = Schema.decodeUnknownSync(PageObservation);
 
+it("clicks only a unique, enabled work control whose center is unobstructed", () => {
+  let disabled = false;
+  const target = {
+    getClientRects: () => [{}],
+    matches: () => disabled,
+    scrollIntoView: () => {},
+    getBoundingClientRect: () => ({ x: 10, y: 20, width: 80, height: 40 }),
+    contains: () => false,
+  };
+  let targets = [target];
+  let hit: object | null = target;
+  const locator = "[data-work-browser-search-button]";
+  const evaluate = (selector = locator) =>
+    decodePage(
+      NodeVM.runInNewContext(pageProgram("slack", "clickPoint", { locator: selector }), {
+        document: {
+          querySelector: () => null,
+          querySelectorAll: (selector: string) => (selector === locator ? targets : []),
+          elementFromPoint: () => hit,
+        },
+        location: { href: "https://app.slack.com/client/EWORK", hostname: "app.slack.com" },
+        TextEncoder,
+      }),
+    );
+  expect(evaluate().point).toEqual({ x: 50, y: 40 });
+  hit = {};
+  expect(evaluate().state).toBe("ui_changed");
+  hit = target;
+  disabled = true;
+  expect(evaluate().state).toBe("ui_changed");
+  disabled = false;
+  targets = [target, target];
+  expect(evaluate().state).toBe("ui_changed");
+  expect(evaluate("button").state).toBe("ui_changed");
+});
+
 it("submits the exact Slack query and rejects stale search results", () => {
   const query = "in:engineering release";
   let shownQuery = `Search: ${query}`;

@@ -414,8 +414,15 @@ const make = Effect.gen(function* () {
           });
         const fill = (task: string, text: string) =>
           control(task).pipe(Effect.flatMap((locator) => type(locator, text)));
+        const clickLocator = (locator: string) =>
+          Effect.gen(function* () {
+            // Slack's locator click stalls; retain a real mouse click after DOM hit-testing.
+            const page = yield* observe("clickPoint", { locator }, false);
+            if (!page.point) return yield* fail("ui_changed");
+            yield* invoke("click", page.point);
+          });
         const click = (task: string, input: object = {}) =>
-          control(task, input).pipe(Effect.flatMap((locator) => invoke("click", { locator })));
+          control(task, input).pipe(Effect.flatMap(clickLocator));
         const navigate = (url: string) =>
           invoke("navigate", { url, waitUntil: "domcontentloaded" });
         const search = (query: string) =>
@@ -604,7 +611,7 @@ const make = Effect.gen(function* () {
                 }).pipe(Effect.mapError(storageError)),
               );
               const outcome = yield* Effect.gen(function* () {
-                yield* invoke("click", { locator: sendLocator });
+                yield* clickLocator(sendLocator);
                 yield* observe("sent", { text: request.text, previousIds });
                 return yield* result("confirmed", undefined, request.operationId);
               }).pipe(Effect.orElseSucceed(() => pending));

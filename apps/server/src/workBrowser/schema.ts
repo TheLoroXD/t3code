@@ -107,6 +107,7 @@ export const PageObservation = Schema.Struct({
   ),
   more: Schema.Boolean,
   locator: Schema.NullOr(Schema.String),
+  point: Schema.optionalKey(Schema.Struct({ x: Schema.Finite, y: Schema.Finite })),
   ids: Schema.optionalKey(Schema.Array(text(200)).check(Schema.isMaxLength(1000))),
 });
 export type PageObservation = typeof PageObservation.Type;
