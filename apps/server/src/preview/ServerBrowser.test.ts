@@ -1535,6 +1535,19 @@ it.live(
           reason:
             'No browser profile is named "Personal". Use one of: Default (id default), Incognito (id incognito), Work (id profile-work).',
         });
+        const shared = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "workOpen",
+          input: { profileId: "profile-saved-work", reuseExistingTab: false, open: false },
+        });
+        const saved = yield* manager.list({ threadId: scope.thread.threadId });
+        expect(saved.sessions.find((session) => session.tabId === shared.tabId)?.profileId).toBe(
+          "profile-saved-work",
+        );
+        expect(contextRequests.at(-1)).toEqual({
+          profileId: "profile-saved-work",
+          isolated: false,
+        });
       }),
     ).pipe(Effect.provide(layer)),
 );

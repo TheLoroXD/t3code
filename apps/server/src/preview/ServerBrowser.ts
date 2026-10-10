@@ -3,6 +3,7 @@
 // --disable-gpu uses cheaper software compositing while preserving SwiftShader WebGL.
 import {
   BUILT_IN_BROWSER_PROFILES,
+  BrowserProfileId,
   DEFAULT_BROWSER_PROFILE_ID,
   FILL_PREVIEW_VIEWPORT,
   findBrowserProfile,
@@ -97,6 +98,7 @@ const DESKTOP_ATTACH_TIMEOUT = "10 seconds";
 const VIEWER_OUTPUT_LIMIT = 64;
 const RECORDING_SCREENCAST = { format: "jpeg", quality: 90, everyNthFrame: 1 } as const;
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSettingSchema);
+const decodeBrowserProfileId = Schema.decodeUnknownSync(BrowserProfileId);
 /** The agent cursor glides to its target, then pulses just before the press, like desktop tabs. */
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
@@ -1694,7 +1696,8 @@ const make = Effect.gen(function* () {
             : tabs.get(tabKey(request.threadId, request.tabId)),
           request.agentSessionId,
         );
-      case "open": {
+      case "open":
+      case "workOpen": {
         if (!request.agentSessionId)
           throw new BrowserControlInterrupted(
             "The agent session is missing. Reconnect the provider.",
@@ -1732,7 +1735,25 @@ const make = Effect.gen(function* () {
             ? found
             : undefined;
         const navigationTimeout = Math.min(request.timeoutMs, NAVIGATION_TIMEOUT_MS);
-        const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
+        const workProfile =
+          request.operation === "workOpen" ? decodeBrowserProfileId(open.profileId) : undefined;
+        if (
+          workProfile === INCOGNITO_BROWSER_PROFILE_ID ||
+          workProfile === "." ||
+          workProfile === ".."
+        )
+          throw new ServerBrowserPage.ServerBrowserOperationError(
+            "PreviewAutomationUnknownProfileError",
+            "Work browser tools require a persistent profile id.",
+          );
+        if (existing && workProfile !== undefined && existing.profileId !== workProfile)
+          throw new ServerBrowserPage.ServerBrowserOperationError(
+            "PreviewAutomationUnknownProfileError",
+            "A work browser tab cannot change its profile.",
+          );
+        const profileId = existing
+          ? undefined
+          : (workProfile ?? resolveOpenProfile(open.profileId));
         if (!existing) {
           closeIdleAgentTabs();
           assertTabCapacity(request.agentSessionId);

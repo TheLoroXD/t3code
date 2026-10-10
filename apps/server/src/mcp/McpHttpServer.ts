@@ -58,6 +58,9 @@ import {
 } from "./toolkits/device/tools.ts";
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
+import * as WorkBrowser from "../workBrowser/WorkBrowser.ts";
+import * as WorkBrowserHandlers from "./toolkits/workBrowser/handlers.ts";
+import { WorkBrowserToolkit } from "./toolkits/workBrowser/tools.ts";
 
 /** Where an MCP client discovers how to sign in (RFC 9728), at this request's own origin. */
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
@@ -833,6 +836,11 @@ export const layerEnvironmentToolkit = toolkitRegistration(
 
 const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
 
+const layerWorkBrowserRegistration = toolkitRegistration(
+  WorkBrowserToolkit,
+  WorkBrowserHandlers.layer,
+).pipe(Layer.provide(WorkBrowser.layer));
+
 export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentToolkit,
   AttachmentHandlers.layer,
@@ -878,4 +886,5 @@ export const layer = Layer.mergeAll(
   layerPullRequestsToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
+  layerWorkBrowserRegistration,
 ).pipe(Layer.provideMerge(layerMcpTransport));
