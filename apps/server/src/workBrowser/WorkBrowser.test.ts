@@ -69,8 +69,7 @@ it.effect(
               } else if (request.operation === "status")
                 value = { available: true, tabId: request.tabId };
               else if (request.operation === "navigate") page!.url = redirect(input.url!);
-              else if (request.operation === "click" && Number(input.x) === 17)
-                sendClicks++;
+              else if (request.operation === "click" && Number(input.x) === 17) sendClicks++;
               else if (request.operation === "evaluate") {
                 if (crashAfterClick && input.expression!.includes(',"sent",'))
                   return Effect.die("connection lost after Send");
@@ -171,6 +170,12 @@ it.effect(
             query: "hello",
           });
           expect(first.items).toHaveLength(1);
+          const toolbar = requests.findIndex(
+            (request) =>
+              request.operation === "evaluate" &&
+              (request.input as { expression: string }).expression.includes(',"searchButton",'),
+          );
+          expect(requests[toolbar - 1]!.input).toMatchObject({ key: "Escape" });
           const typed = requests.filter((request) => request.operation === "type");
           expect(typed.at(-1)!.input).toMatchObject({ text: "hello", clear: false });
           expect(

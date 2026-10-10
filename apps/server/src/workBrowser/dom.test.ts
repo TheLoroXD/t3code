@@ -6,10 +6,111 @@ import { PageObservation } from "./schema.ts";
 
 const decodePage = Schema.decodeUnknownSync(PageObservation);
 
+it("reads the current Outlook message body and rejects another mailbox or conversation", () => {
+  let email = "person@work.example";
+  let selectedId = "conversation-1";
+  const element = (text: string, attributes: Record<string, string> = {}) => ({
+    innerText: text,
+    textContent: text,
+    getClientRects: () => [{}],
+    getAttribute: (name: string) => attributes[name] ?? null,
+  });
+  const body = element("The message itself", { "aria-label": "Cuerpo del mensaje" });
+  const document = {
+    querySelector: (selector: string) =>
+      selector.includes("primaryMailboxRoot_")
+        ? element(email, { "data-folder-name": email })
+        : null,
+    querySelectorAll: (selector: string) =>
+      selector.includes("[data-testid='message-body']")
+        ? [body]
+        : selector === ".allowTextSelection"
+          ? [element("Header"), element("Header plus message")]
+          : selector === "[data-convid][aria-selected='true']"
+            ? [element("", { "data-convid": selectedId })]
+            : [],
+  };
+  const evaluate = () =>
+    decodePage(
+      NodeVM.runInNewContext(
+        pageProgram("outlook", "mailBody", {
+          id: "conversation-1",
+          accountEmail: "person@work.example",
+        }),
+        {
+          document,
+          location: {
+            href: "https://outlook.cloud.microsoft/mail/id/conversation-1",
+            hostname: "outlook.cloud.microsoft",
+          },
+          TextEncoder,
+        },
+      ),
+    );
+  expect(evaluate().items[0]!.text).toBe("The message itself");
+  selectedId = "conversation-2";
+  expect(evaluate().state).toBe("ui_changed");
+  email = "someone@other.example";
+  expect(evaluate().state).toBe("account_mismatch");
+});
+
+it("verifies the calendar's display zone and exact rendered day", () => {
+  let dates = ["2026-10-09"];
+  let zone = "(UTC-06:00) Guadalajara, Ciudad de México, Monterrey";
+  const element = (attributes: Record<string, string>) => ({
+    getClientRects: () => [{}],
+    getAttribute: (name: string) => attributes[name] ?? null,
+  });
+  const document = {
+    querySelector: () => ({ textContent: "person@work.example", getAttribute: () => null }),
+    querySelectorAll: (selector: string) =>
+      selector === "[data-column-date]"
+        ? dates.map((date) => element({ "data-column-date": date }))
+        : selector === "input[role='combobox']"
+          ? [
+              {
+                ...element({ "aria-label": "Mostrar mi calendario en la zona horaria:" }),
+                value: zone,
+              },
+            ]
+          : [],
+  };
+  const evaluate = (task: string) =>
+    decodePage(
+      NodeVM.runInNewContext(
+        pageProgram("outlook", task, {
+          date: "2026-10-09",
+          timeZone: "America/Mexico_City",
+          accountEmail: "person@work.example",
+        }),
+        {
+          document,
+          location: {
+            href: "https://outlook.cloud.microsoft/calendar/view/day",
+            hostname: "outlook.cloud.microsoft",
+            pathname: "/calendar/view/day",
+          },
+          TextEncoder,
+        },
+      ),
+    );
+  expect(evaluate("calendarZone").state).toBe("ready");
+  zone = "(UTC-08:00) Pacific Time (US & Canada)";
+  expect(evaluate("calendarZone").state).toBe("ui_changed");
+  expect(evaluate("calendar").state).toBe("ready");
+  expect(evaluate("calendar").more).toBe(true);
+  dates = ["2026-10-08"];
+  expect(evaluate("calendar").state).toBe("ui_changed");
+  dates = ["2026-10-08", "2026-10-09"];
+  expect(evaluate("calendar").state).toBe("ui_changed");
+});
+
 it("clicks only a unique, enabled work control whose center is unobstructed", () => {
   let disabled = false;
+  let hidden = false;
   const target = {
     getClientRects: () => [{}],
+    checkVisibility: () => !hidden,
     matches: () => disabled,
     scrollIntoView: () => {},
     getBoundingClientRect: () => ({ x: 10, y: 20, width: 80, height: 40 }),
@@ -37,6 +138,9 @@ it("clicks only a unique, enabled work control whose center is unobstructed", ()
   disabled = true;
   expect(evaluate().state).toBe("ui_changed");
   disabled = false;
+  hidden = true;
+  expect(evaluate().state).toBe("ui_changed");
+  hidden = false;
   targets = [target, target];
   expect(evaluate().state).toBe("ui_changed");
   expect(evaluate("button").state).toBe("ui_changed");

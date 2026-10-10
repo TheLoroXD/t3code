@@ -53,7 +53,11 @@ with the same ID is rejected. Receipts contain hashes and status metadata;
 message bodies and credentials are not stored in them.
 
 The calendar tool reads one visible day and requires an ISO date and an IANA
-time zone. It reports partial labels and fails if those cannot be checked. This
+time zone. It verifies the display zone in calendar settings and uses the date
+picker, checking the rendered day before returning event labels. This initial
+version supports the Mexico City and UTC display labels and at most 24 month
+steps; it fails for other zones or dates it cannot select. It reports partial
+labels and fails if those cannot be checked. This
 version does not create meetings, handle attachments, or export whole accounts.
 
 Work-account configuration and send receipts live in the server's

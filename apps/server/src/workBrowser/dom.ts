@@ -5,17 +5,22 @@ export function pageProgram(app: "slack" | "outlook", task: string, input: objec
 }
 
 function runPage(app: string, task: string, input: Record<string, unknown>) {
-  const visible = (element: Element) => element.getClientRects().length > 0;
+  const visible = (element: Element) =>
+    element.getClientRects().length > 0 &&
+    element.checkVisibility?.({ visibilityProperty: true }) !== false;
   const all = (selector: string) =>
     Array.from(document.querySelectorAll<HTMLElement>(selector)).filter(visible);
   const clean = (value: string | null | undefined, limit = 16000) =>
     (value ?? "").trim().slice(0, limit);
   const pageUrl = location.href;
   const accountElement = document.querySelector(
-    "#meControl, [aria-label*='Account manager'], [data-testid='account-email']",
+    "#mectrl_currentAccount_secondary, [id^='primaryMailboxRoot_'], #meControl, [aria-label*='Account manager'], [data-testid='account-email']",
   );
   const accountText =
-    accountElement?.getAttribute("aria-label") ?? accountElement?.textContent ?? "";
+    accountElement?.getAttribute("data-folder-name") ??
+    accountElement?.getAttribute("aria-label") ??
+    accountElement?.textContent ??
+    "";
   const account = accountText.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i)?.[0]?.toLowerCase() ?? null;
   const base = {
     state: "ready",
@@ -72,6 +77,13 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
   if (app === "outlook" && account !== null && account !== String(input.accountEmail).toLowerCase())
     return { ...base, state: "account_mismatch" };
   if (task === "status") {
+    if (app === "outlook" && account === null) {
+      const buttons = all("button:has([data-tid='me-control-mini-avatar'])");
+      if (buttons.length === 1 && !buttons[0]!.hasAttribute("data-work-browser-account-request")) {
+        buttons[0]!.setAttribute("data-work-browser-account-request", "true");
+        buttons[0]!.click();
+      }
+    }
     const ready =
       app === "slack"
         ? all(
@@ -105,7 +117,11 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
 
   if (task === "clickPoint") {
     const locator = String(input.locator);
-    if (!/^\[data-work-browser-(search-button|search-submit|new|row|send)\]$/.test(locator))
+    if (
+      !/^\[data-work-browser-(search-button|search-submit|new|row|send|calendar-date|calendar-month|calendar-settings|calendar-close)\]$/.test(
+        locator,
+      )
+    )
       return { ...base, state: "ui_changed" };
     const targets = all(locator);
     if (targets.length !== 1 || targets[0]!.matches(":disabled, [aria-disabled='true']"))
@@ -115,8 +131,7 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
     const rect = target.getBoundingClientRect();
     const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
     const hit = document.elementFromPoint(point.x, point.y);
-    if (!hit || (hit !== target && !target.contains(hit)))
-      return { ...base, state: "ui_changed" };
+    if (!hit || (hit !== target && !target.contains(hit))) return { ...base, state: "ui_changed" };
     return { ...base, point };
   }
   if (task === "searchButton")
@@ -137,8 +152,75 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
       ),
       "search",
     );
+  if (task === "calendarSettings")
+    return mark(all("#owaSettingsBtn_container"), "calendar-settings");
+  if (task === "calendarClose")
+    return mark(namedButtons(/^(Close settings|Cerrar configuración)$/i), "calendar-close");
+  if (task === "calendarZone") {
+    const zones = all("input[role='combobox']").filter((el) =>
+      /^(Display my calendar in time zone:|Mostrar mi calendario en la zona horaria:)$/i.test(
+        el.getAttribute("aria-label") ?? "",
+      ),
+    ) as HTMLInputElement[];
+    // ponytail: only calibrated Mexico City and UTC labels; add other zones after UI verification.
+    const labels: Record<string, RegExp> = {
+      "America/Mexico_City":
+        /^\(UTC-06:00\) Guadalajara, (Ciudad de México|Mexico City), Monterrey$/i,
+      UTC: /^\(UTC\) (Coordinated Universal Time|Hora universal coordinada)$/i,
+    };
+    return {
+      ...base,
+      state:
+        zones.length === 1 && labels[String(input.timeZone)]?.test(zones[0]!.value)
+          ? "ready"
+          : "ui_changed",
+    };
+  }
+  if (task === "calendarDate") {
+    const date = new Date(`${input.date}T00:00:00Z`);
+    const locale = document.documentElement.lang || "en-US";
+    const formatter = new Intl.DateTimeFormat(locale, { month: "long", timeZone: "UTC" });
+    const month = formatter.format(date).toLowerCase();
+    const day = date.getUTCDate();
+    const year = date.getUTCFullYear();
+    const labels = new Set([`${day}, ${month}, ${year}`, `${month} ${day}, ${year}`]);
+    const days = all(".fui-CalendarDayGrid__dayButton").filter((el) =>
+      labels.has((el.getAttribute("aria-label") ?? "").toLowerCase()),
+    );
+    if (days.length === 1) return mark(days, "calendar-date");
+    const headers = all(".fui-CalendarDay__monthAndYear");
+    if (headers.length !== 1) return { ...base, state: "ui_changed" };
+    const shown = clean(headers[0]!.textContent).toLowerCase();
+    const shownYear = Number(shown.match(/\b\d{4}\b/)?.[0]);
+    const shownMonth = Array.from({ length: 12 }, (_, index) =>
+      formatter.format(new Date(Date.UTC(2000, index, 1))).toLowerCase(),
+    ).findIndex((name) => shown.includes(name));
+    const monthId = `${shownYear}-${shownMonth}`;
+    const difference = (year - shownYear) * 12 + date.getUTCMonth() - shownMonth;
+    if (
+      !shownYear ||
+      shownMonth < 0 ||
+      difference === 0 ||
+      Math.abs(difference) > 24 ||
+      input.previousMonth === monthId
+    )
+      return { ...base, state: "ui_changed" };
+    const pattern = difference < 0 ? /previous month|mes anterior/i : /next month|mes siguiente/i;
+    return {
+      ...mark(
+        all(".fui-CalendarDay__headerIconButton").filter((el) =>
+          pattern.test(el.getAttribute("title") ?? el.getAttribute("aria-label") ?? ""),
+        ),
+        "calendar-month",
+      ),
+      month: monthId,
+    };
+  }
   if (task === "newMail")
-    return mark(namedButtons(/^(New mail|New message|Nuevo correo|Nuevo mensaje)$/i), "new");
+    return mark(
+      namedButtons(/^(New mail|New message|Nuevo correo|Correo nuevo|Nuevo mensaje)$/i),
+      "new",
+    );
   if (task === "mailRow")
     return mark(
       all("[data-convid], [data-item-id]").filter((row) => rowId(row) === input.id),
@@ -163,7 +245,7 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
   if (task === "recipient")
     return mark(
       all(
-        "input[aria-label='To'], input[aria-label='Para'], input[aria-label='Required attendees'], input[aria-label='Asistentes requeridos']",
+        "input[aria-label='To'], input[aria-label='Para'], [contenteditable='true'][aria-label='To'], [contenteditable='true'][aria-label='Para'], input[aria-label='Required attendees'], input[aria-label='Asistentes requeridos']",
       ),
       "to",
     );
@@ -224,7 +306,12 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
         expected.some((email) => !emailSet.has(email.toLowerCase()))
       )
         return { ...base, state: "account_mismatch" };
-      if (all("[data-work-browser-to]").some((el) => (el as HTMLInputElement).value.trim() !== ""))
+      if (
+        all("[data-work-browser-to]").some(
+          (el) =>
+            ((el as HTMLInputElement).value ?? el.innerText).replace(/\u200b/g, "").trim() !== "",
+        )
+      )
         return { ...base, state: "ui_changed" };
       return mark(
         namedButtons(/^(Send|Enviar)( \(.+\))?$/i).filter((el) => compose!.contains(el)),
@@ -293,28 +380,31 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
     return base;
   }
   if (task === "calendar") {
-    const viewedDate = all("[data-date]").some((el) => el.getAttribute("data-date") === input.date);
-    const zone = all("[data-time-zone]").some(
-      (el) => el.getAttribute("data-time-zone") === input.timeZone,
-    );
-    if (!viewedDate || !zone) return { ...base, state: "ui_changed" };
-    const rows = all(
-      "[data-calendar-event], [data-testid='calendar-event'], [data-automationid='CalendarEvent']",
+    const dates = new Set(
+      all("[data-column-date]").map((el) => el.getAttribute("data-column-date")),
     );
     if (
-      rows.length === 0 &&
-      !all("[data-testid='calendar-empty'], [aria-label*='Calendar']").length
+      !/\/calendar\/view\/day\/?$/.test(location.pathname) ||
+      dates.size !== 1 ||
+      !dates.has(String(input.date))
     )
+      return { ...base, state: "ui_changed" };
+    const rows = all("[data-calitemid]");
+    if (all("[role='progressbar'], [aria-busy='true']").length > 0)
       return { ...base, state: "ui_changed" };
     for (const row of rows) {
       if (
         !push({
-          id: rowId(row) || clean(row.innerText, 200),
+          id: row.getAttribute("data-calitemid")!,
           ref: "",
           kind: "event",
           text: clean(row.innerText),
           author: null,
-          subject: clean(row.getAttribute("aria-label"), 1000) || null,
+          subject:
+            clean(
+              row.querySelector("[role='button'][aria-label]")?.getAttribute("aria-label"),
+              1000,
+            ) || null,
           sourceUrl: pageUrl,
           timestamp: row.getAttribute("data-start"),
         })
@@ -325,8 +415,16 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
     return base;
   }
   if (task === "mailBody") {
-    const bodies = all("[data-testid='message-body'], [role='document'], .allowTextSelection");
-    if (bodies.length !== 1) return { ...base, state: "ui_changed" };
+    const primary = all("[data-testid='message-body'], [role='document'][aria-label]");
+    const bodies = primary.length ? primary : all(".allowTextSelection");
+    const selected = all("[data-convid][aria-selected='true']");
+    if (
+      bodies.length !== 1 ||
+      selected.length !== 1 ||
+      rowId(selected[0]!) !== input.id ||
+      all("[role='progressbar'], [aria-busy='true']").length > 0
+    )
+      return { ...base, state: "ui_changed" };
     const bodyText = bodies[0]!.innerText;
     base.more = bodyText.trim().length > 16000;
     if (
@@ -336,10 +434,14 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
         kind: "mail",
         text: clean(bodyText),
         author:
-          clean(document.querySelector("[data-testid='message-sender']")?.textContent, 500) || null,
+          clean(
+            document.querySelector("[data-testid='message-sender'], [id^='MSG_'][id$='_FROM']")
+              ?.textContent,
+            500,
+          ) || null,
         subject:
           clean(
-            document.querySelector("[data-testid='message-subject'], [role='heading']")
+            document.querySelector("[data-testid='message-subject'], [id^='CONV_'][id$='_SUBJECT']")
               ?.textContent,
             1000,
           ) || null,
@@ -355,7 +457,7 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
       ? all(
           app === "slack"
             ? "[data-qa='search_view'], .p-search_results, .p-search_results__messages, [data-testid='search-results']"
-            : "[data-testid='mail-search-results'], [aria-label='Search results'], [aria-label='Resultados de búsqueda']",
+            : "[data-testid='mail-search-results'], [aria-label='Search results'], [aria-label='Resultados de búsqueda'], [role='complementary']:has([role='heading'] [aria-label='Resultados']), [role='complementary']:has([role='heading'] [aria-label='Results'])",
         )
       : [];
   if (task === "searchRows" && searchView.length === 0) return { ...base, state: "ui_changed" };
@@ -367,7 +469,11 @@ function runPage(app: string, task: string, input: Record<string, unknown>) {
     const searches = all(
       "#topSearchInput, input[aria-label*='Search'], input[aria-label*='Buscar']",
     ) as HTMLInputElement[];
-    if (searches.length !== 1 || searches[0]!.value !== input.query)
+    if (
+      searches.length !== 1 ||
+      searches[0]!.value !== input.query ||
+      all("[role='progressbar'], [aria-busy='true']").length > 0
+    )
       return { ...base, state: "ui_changed" };
   }
   const selector =

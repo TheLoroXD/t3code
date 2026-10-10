@@ -424,11 +424,16 @@ const make = Effect.gen(function* () {
         const click = (task: string, input: object = {}) =>
           control(task, input).pipe(Effect.flatMap(clickLocator));
         const navigate = (url: string) =>
-          invoke("navigate", { url, waitUntil: "domcontentloaded" });
+          invoke("navigate", { url, waitUntil: "domcontentloaded" }).pipe(
+            Effect.tap(() => observe("status")),
+            Effect.tap(() => invoke("press", { key: "Escape" })),
+          );
         const search = (query: string) =>
           Effect.gen(function* () {
             searchQuery = query;
             if (app === "slack") {
+              // An earlier search dialog can cover the toolbar after a reload or failed search.
+              yield* invoke("press", { key: "Escape" });
               yield* click("searchButton");
             } else {
               searchUrl = configuration.outlookUrl;
@@ -537,7 +542,6 @@ const make = Effect.gen(function* () {
             case "calendar": {
               if (!/^\d{4}-\d{2}-\d{2}$/.test(request.date))
                 return yield* fail("invalid_configuration");
-              const [year, month, day] = request.date.split("-");
               const valid = yield* Effect.try({
                 try: () => {
                   const formatter = new Intl.DateTimeFormat("en-US", {
@@ -552,9 +556,20 @@ const make = Effect.gen(function* () {
                 catch: () => fail("invalid_configuration"),
               });
               if (!valid) return yield* fail("invalid_configuration");
-              yield* navigate(
-                `${safeUrl(configuration.outlookUrl)!.origin}/calendar/view/day/${year}/${month}/${day}`,
-              );
+              yield* navigate(`${safeUrl(configuration.outlookUrl)!.origin}/calendar/view/day`);
+              yield* click("calendarSettings");
+              yield* observe("calendarZone", { timeZone: request.timeZone });
+              yield* click("calendarClose");
+              let previousMonth: string | undefined;
+              // ponytail: at most 24 month steps; add a year picker if distant dates are needed.
+              for (let step = 0; step <= 24; step++) {
+                const page = yield* observe("calendarDate", { date: request.date, previousMonth });
+                if (!page.locator) return yield* fail("ui_changed");
+                yield* clickLocator(page.locator);
+                if (page.locator === "[data-work-browser-calendar-date]") break;
+                previousMonth = page.month;
+                if (step === 24) return yield* fail("ui_changed");
+              }
               return yield* result(
                 "ready",
                 yield* observe("calendar", { date: request.date, timeZone: request.timeZone }),
