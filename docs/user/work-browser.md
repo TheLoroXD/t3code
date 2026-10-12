@@ -5,7 +5,9 @@ and inspect the Outlook day view through the browser UI. Each work account
 uses one existing persistent profile. All its agents share one queued tab per
 app, preserving both saved logins and Outlook's tab-local state.
 
-This feature requires a T3 build containing the work-browser tools. The first
+This feature requires a T3 build containing the work-browser tools. Updating to
+a build without them removes the tools; use a build that includes the feature
+when upgrading. The first
 version needs its controls checked against your organization's current Slack
 and Outlook pages before relying on it. If a control, sender, destination, date,
 or time zone cannot be verified, the tool fails instead of guessing.
