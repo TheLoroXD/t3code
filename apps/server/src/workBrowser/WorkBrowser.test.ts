@@ -41,7 +41,7 @@ const scope = {
   },
 };
 
-it.effect(
+it.live(
   "keeps work accounts separate, shares each login, holds expired auth, and never replays an uncertain send",
   () =>
     Effect.scoped(
@@ -55,6 +55,7 @@ it.effect(
         let wrongWorkspace = false;
         let crashAfterClick = false;
         let sendClicks = 0;
+        let searchCovered = true;
         const broker = Layer.mock(Broker.PreviewAutomationBroker)({
           invoke: <A>(request: Broker.PreviewAutomationInvokeInput) =>
             Effect.suspend(() => {
@@ -96,12 +97,21 @@ it.effect(
                   input.expression!.includes(',"rows",') ||
                   input.expression!.includes(',"searchRows",');
                 const outlook = page!.url.includes("outlook.");
+                const covered =
+                  outlook &&
+                  !expired &&
+                  searchCovered &&
+                  input.expression!.includes(',"clickPoint",') &&
+                  input.expression!.includes('"locator":"[data-work-browser-search]"');
+                if (covered) searchCovered = false;
                 value = {
                   state: expired
                     ? "auth_required"
-                    : outlook && rows && !page!.submitted
+                    : covered
                       ? "ui_changed"
-                      : "ready",
+                      : outlook && rows && !page!.submitted
+                        ? "ui_changed"
+                        : "ready",
                   url: wrongWorkspace ? "https://app.slack.com/client/TOTHER" : page!.url,
                   account:
                     page!.profile === verato.profileId ? verato.accountEmail : onecall.accountEmail,
@@ -279,6 +289,13 @@ it.effect(
           });
           expect(mail.items).toHaveLength(1);
           expect(mail.items[0]!.kind).toBe("mail");
+          expect(searchCovered).toBe(false);
+          expect(
+            requests.filter(
+              (request) =>
+                request.operation === "click" && (request.input as { x: number }).x === 9,
+            ),
+          ).toHaveLength(1);
 
           expired = true;
           const held = yield* service.run({ operation: "status", account: "verato", app: "slack" });

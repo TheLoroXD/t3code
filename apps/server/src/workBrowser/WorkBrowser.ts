@@ -398,6 +398,11 @@ const make = Effect.gen(function* () {
               times: wait ? 50 : 0,
               schedule: Schedule.spaced("200 millis"),
             }),
+            Effect.tapError((error) =>
+              error.code === "ui_changed"
+                ? Effect.logWarning("work browser control unavailable", { app, task })
+                : Effect.void,
+            ),
           );
         const control = (task: string, input: object = {}) =>
           observe(task, input).pipe(
@@ -415,10 +420,10 @@ const make = Effect.gen(function* () {
           });
         const fill = (task: string, text: string) =>
           control(task).pipe(Effect.flatMap((locator) => type(locator, text)));
-        const clickLocator = (locator: string) =>
+        const clickLocator = (locator: string, wait = true) =>
           Effect.gen(function* () {
             // Slack's locator click stalls; retain a real mouse click after DOM hit-testing.
-            const page = yield* observe("clickPoint", { locator }, false);
+            const page = yield* observe("clickPoint", { locator }, wait);
             if (!page.point) return yield* fail("ui_changed");
             yield* invoke("click", page.point);
           });
@@ -647,7 +652,7 @@ const make = Effect.gen(function* () {
                 }).pipe(Effect.mapError(storageError)),
               );
               const outcome = yield* Effect.gen(function* () {
-                yield* clickLocator(sendLocator);
+                yield* clickLocator(sendLocator, false);
                 yield* observe("sent", { text: request.text, previousIds });
                 return yield* result("confirmed", undefined, request.operationId);
               }).pipe(Effect.orElseSucceed(() => pending));
