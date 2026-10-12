@@ -712,7 +712,8 @@ const make = Effect.gen(function* () {
    * new tab waits for its `<webview>` instead of launching headless.
    */
   const desktopRenders = (snapshot: PreviewSessionSnapshot) =>
-    desktopChannel.available
+    // Shared work tabs must retain the server's profile even when a desktop connects.
+    desktopChannel.available && !snapshot.automationOwner?.includes("\u0000work-browser:")
       ? Effect.runPromise(
           desktopChannel.awaitAttached(
             { threadId: snapshot.threadId, tabId: snapshot.tabId },

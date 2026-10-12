@@ -1552,6 +1552,23 @@ it.live(
     ).pipe(Effect.provide(layer)),
 );
 
+it.live("shared work tabs retain the server profile when a desktop offers to render them", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* ready;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      desktopRendersNext = true;
+      yield* broker.invoke<PreviewAutomationStatus>({
+        scope: asSession("work-browser:account"),
+        operation: "workOpen",
+        input: { profileId: "profile-saved-work", reuseExistingTab: false, open: false },
+      });
+      expect(desktopConnections).toHaveLength(0);
+      expect(contextRequests.at(-1)).toEqual({ profileId: "profile-saved-work", isolated: false });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("an agent tab keeps throwaway storage when no client reported profiles", () =>
   Effect.scoped(
     Effect.gen(function* () {
