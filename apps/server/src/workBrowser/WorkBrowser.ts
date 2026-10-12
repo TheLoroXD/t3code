@@ -448,7 +448,9 @@ const make = Effect.gen(function* () {
             const locator = yield* control("searchInput");
             // Outlook initializes its search state on click; focus alone drops the first query.
             if (app === "outlook") yield* clickLocator(locator);
-            yield* type(locator, query);
+            // Deleting an empty Outlook search closes it; replace the query in one fill.
+            if (app === "outlook") yield* invoke("type", { locator, text: query, clear: true });
+            else yield* type(locator, query);
             if (app === "slack") yield* click("searchSubmit", { query });
             else yield* invoke("press", { key: "Enter" });
             return yield* observe("searchRows", { query });

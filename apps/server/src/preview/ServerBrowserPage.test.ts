@@ -57,6 +57,24 @@ describe("server browser element refs", () => {
   };
   const repeatedRows = `<ul>${Array.from({ length: 5 }, (_, i) => `<li>row ${i + 1}<button data-testid="delete-row" onclick="this.parentElement.remove()">delete</button></li>`).join("")}</ul>`;
 
+  it("redacts password values while preserving editable refs and ordinary input values", async () => {
+    await page.setContent(
+      '<label>Username<input value="visible-user"></label><label>Password<input type="password" value="fake-secret]suffix"></label>',
+    );
+    const result = await takeSnapshot();
+    const tree = String(result.accessibilityTree);
+    expect(tree).not.toContain("fake-secret");
+    expect(tree).not.toContain("suffix");
+    expect(tree).toContain("visible-user");
+    const line = tree.split("\n").find((line) => line.includes('textbox "Password"'))!;
+    await ServerBrowserPage.type(page, {
+      locator: locators(line)[0]!,
+      text: "replacement",
+      clear: true,
+    });
+    expect(await page.locator('input[type="password"]').inputValue()).toBe("replacement");
+  });
+
   it("clicks the fifth repeated delete control without touching row one", async () => {
     await page.setContent(repeatedRows);
     const result = await takeSnapshot();

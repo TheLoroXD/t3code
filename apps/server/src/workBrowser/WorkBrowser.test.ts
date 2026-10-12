@@ -85,6 +85,12 @@ it.live(
                 page!.submitted = false;
               } else if (request.operation === "click" && Number(input.x) === 9)
                 page!.searchActive = true;
+              else if (
+                request.operation === "press" &&
+                input.key === "Delete" &&
+                page!.url.includes("outlook.")
+              )
+                page!.searchActive = false;
               else if (request.operation === "click" && Number(input.x) === 17) sendClicks++;
               else if (request.operation === "type" && input.text && page!.url.includes("outlook."))
                 page!.query = page!.searchActive ? input.text : "";

@@ -198,19 +198,42 @@ export const snapshot = async (input: {
     input.page.ariaSnapshot({ mode: "ai", boxes: true, timeout: DEFAULT_TIMEOUT_MS }),
     captureViewport(input.page, input.cdp, { format: "png", scale }),
   ]);
+  const redactedTree = (
+    await Promise.all(
+      tree
+        .slice(0, MAX_VISIBLE_TEXT_LENGTH)
+        .split("\n")
+        .map(async (line) => {
+          const ref = /\[ref=((?:f\d+)?e\d+)\]/.exec(line)?.[1];
+          if (!ref || !/^\s*- textbox\b/.test(line)) return line;
+          const password = await input.page
+            .locator(`aria-ref=${ref}`)
+            .evaluate(
+              (element) =>
+                element.tagName === "INPUT" &&
+                element.getAttribute("type")?.toLowerCase() === "password",
+            )
+            .catch(() => true);
+          return password
+            ? line.replace(/(\[ref=(?:f\d+)?e\d+\](?: \[[^\]]*\])*)\s*:.*$/, "$1: [redacted]")
+            : line;
+        }),
+    )
+  ).join("\n");
   if (state.generation !== generation) {
     throw new ServerBrowserOperationError(
       "PreviewAutomationExecutionError",
       "The page changed while capturing its snapshot. Take another snapshot.",
     );
   }
-  const accessibilityTree = tree
-    .slice(0, MAX_VISIBLE_TEXT_LENGTH)
-    .replace(/\[ref=((?:f\d+)?e\d+)\]/g, (_match, nativeRef: string) => {
+  const accessibilityTree = redactedTree.replace(
+    /\[ref=((?:f\d+)?e\d+)\]/g,
+    (_match, nativeRef: string) => {
       const ref = `t3-${generation}-${nativeRef}`;
       state.refs.set(ref, nativeRef);
       return `[ref=${ref}]`;
-    });
+    },
+  );
   return {
     ...page,
     accessibilityTree,
