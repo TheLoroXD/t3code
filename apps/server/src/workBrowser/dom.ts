@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off -- Serialized browser programs cannot import Effect's DateTime.
 /// <reference lib="dom" />
 /** Fixed page programs. Tool input is data; it never supplies JavaScript or selectors. */
 export function pageProgram(app: "slack" | "outlook", task: string, input: object = {}): string {
