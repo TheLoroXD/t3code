@@ -7,7 +7,13 @@ import { WorkBrowserError, type Request } from "../../../workBrowser/schema.ts";
 
 const isWorkBrowserError = Schema.is(WorkBrowserError);
 const publicError = <E>(error: E) =>
-  isWorkBrowserError(error) ? new WorkBrowserError({ code: error.code }) : error;
+  isWorkBrowserError(error)
+    ? new WorkBrowserError({
+        code: error.code,
+        ...(error.backend ? { backend: error.backend } : {}),
+        ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
+      })
+    : error;
 const run = (request: Request) =>
   WorkBrowser.WorkBrowser.pipe(
     Effect.flatMap((service) => service.run(request)),

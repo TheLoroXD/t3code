@@ -72,6 +72,7 @@ import type {
 
 import { PENDING_ATTACHMENT_THREAD_SEGMENT } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import { executeBrowserRead } from "../workBrowser/BrowserReadOperation.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
@@ -1979,6 +1980,8 @@ const make = Effect.gen(function* () {
           input as PreviewAutomationEvaluateInput,
           request.timeoutMs,
         );
+      case "workRead":
+        return executeBrowserRead(tab.page, input);
       case "waitFor":
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
       case "recordingStart": {

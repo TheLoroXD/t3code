@@ -35,8 +35,8 @@ account and expire when the server restarts or old references are evicted.
 Search again to refresh them. Results include their source, observation time,
 and `partial`; rendered or truncated results are not a complete export.
 Opening Outlook mail can mark it read. Composing can autosave a draft.
-Slack sends and linked message reads currently use channel URLs; direct-message
-conversations are not supported in this build.
+Slack sends and DOM message reads use channel URLs. The API read backend also
+supports references to direct-message conversations available to the session.
 `browserThreadId` identifies the thread containing the shared work tab. Use
 the work tools for agent actions; the human can open that thread to inspect it.
 
@@ -72,4 +72,32 @@ version does not create meetings, handle attachments, or export whole accounts.
 Work-account configuration and send receipts live in the server's
 `userdata/work-browser` directory with private permissions. Browser cookies
 remain in T3's existing profile storage. These tools are exposed through T3's
-MCP to its thread agents; they do not use Slack API tokens or Microsoft Graph.
+MCP to its thread agents.
+
+Reads use DOM by default. A maintainer can select `readBackends.slackSearch`
+and `readBackends.slackRead` as `api` for an account that passed capability
+validation. This build has verified those two operations for `verato`.
+API configuration also requires `slackApi` with the expected environment,
+workspace, user, Enterprise identity when applicable, workspace origin and
+search scope. It uses the existing browser session; credentials stay in the
+page. API tabs are separate from the DOM driver and a human takeover returns
+`browser_busy`.
+
+API results add `backend`, `validatedIdentity`, `coverage`, and an optional
+opaque `cursor`. `partial` also covers truncated or unrepresented message
+content. Continue a search with the same account, query, limit and cursor;
+continue a thread with the same reference and cursor. Reads return at most
+100 items, use at most five data pages, and bound each request and response.
+Continuations expire after 15 minutes or a server restart. API failures return
+typed errors without changing backend. To return to DOM, select `dom` for
+that operation and start a new search to obtain fresh references.
+
+Outlook mail and calendar have not passed API validation in this build. The
+observed MSAL cache was encrypted, including after one normal reload of the
+agent's own tab. Those operations remain on their existing DOM route; their
+API configuration is rejected. This capability result does not certify the
+DOM mailbox or calendar tools. Onecall also remains pending account and
+identity configuration.
+
+The generic browser tools retain their existing access to profiles and page
+execution. The credential guarantee applies to these registered read adapters.

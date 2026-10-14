@@ -1,5 +1,6 @@
 import { BrowserProfileId, PreviewTabId, ThreadId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import { ReadBackends, SlackApiIdentity } from "./readSchema.ts";
 
 const text = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 const requiredText = (max: number) => text(max).check(Schema.isNonEmpty());
@@ -12,6 +13,8 @@ export const Configuration = Schema.Struct({
   slackUrl: requiredText(2048),
   outlookUrl: Schema.optionalKey(requiredText(2048)),
   accountEmail: requiredText(254),
+  readBackends: Schema.optionalKey(ReadBackends),
+  slackApi: Schema.optionalKey(SlackApiIdentity),
 });
 export type Configuration = typeof Configuration.Type;
 
@@ -26,8 +29,23 @@ export class WorkBrowserError extends Schema.TaggedError<WorkBrowserError>()("Wo
     "storage_failed",
     "operation_conflict",
     "auth_required",
+    "capability_unavailable",
+    "origin_changed",
+    "permission_denied",
+    "api_timeout",
+    "api_network",
+    "rate_limited",
+    "response_incompatible",
+    "not_found",
+    "upstream_failed",
+    "response_too_large",
+    "browser_busy",
+    "invalid_cursor",
+    "read_deadline",
   ]),
   cause: Schema.optionalKey(Schema.Defect()),
+  backend: Schema.optionalKey(Schema.Literals(["dom", "api"])),
+  httpStatus: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 599 }))),
 }) {
   override get message(): string {
     const messages = {
@@ -48,6 +66,24 @@ export class WorkBrowserError extends Schema.TaggedError<WorkBrowserError>()("Wo
       operation_conflict:
         "This operationId was already used with different content. Use a new operationId for a different send.",
       auth_required: "Resume the existing work-browser login before issuing more requests.",
+      capability_unavailable:
+        "This account and operation have not passed API capability validation. Select DOM explicitly.",
+      origin_changed:
+        "The dedicated read tab changed origin or navigated. Start a new query after checking its account.",
+      permission_denied:
+        "The session does not have permission for this API read. Authentication was not retried.",
+      api_timeout: "The page request reached its timeout and was aborted.",
+      api_network: "The API read failed in the browser. No other backend was attempted.",
+      rate_limited: "The read retry budget cannot satisfy the provider's rate limit. Retry later.",
+      response_incompatible: "The API response did not match the bounded read contract.",
+      not_found: "The requested conversation or message is unavailable to this session.",
+      upstream_failed: "The upstream API rejected the read.",
+      response_too_large: "The API response exceeded the bounded read size.",
+      browser_busy: "The dedicated API read tab is unavailable or controlled by a human.",
+      invalid_cursor:
+        "The continuation expired or belongs to a different account, identity, backend or query.",
+      read_deadline:
+        "The bounded read deadline was reached before another page could be requested.",
     };
     return messages[this.code];
   }
@@ -57,8 +93,13 @@ export const SearchInput = Schema.Struct({
   account: Account,
   query: requiredText(1000),
   limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+  cursor: Schema.optionalKey(requiredText(200)),
 });
-export const ReadInput = Schema.Struct({ account: Account, messageRef: requiredText(200) });
+export const ReadInput = Schema.Struct({
+  account: Account,
+  messageRef: requiredText(200),
+  cursor: Schema.optionalKey(requiredText(200)),
+});
 export const SlackSendInput = Schema.Struct({
   account: Account,
   channelUrl: requiredText(2048),
@@ -127,5 +168,9 @@ export const Result = Schema.Struct({
   authEpisode: Schema.NullOr(Schema.String),
   authThreadId: Schema.optionalKey(ThreadId),
   operationId: Schema.optionalKey(Schema.String),
+  backend: Schema.optionalKey(Schema.Literals(["dom", "api"])),
+  validatedIdentity: Schema.optionalKey(requiredText(200)),
+  coverage: Schema.optionalKey(Schema.Literals(["rendered", "workspace", "enterprise", "thread"])),
+  cursor: Schema.optionalKey(requiredText(200)),
 });
 export type Result = typeof Result.Type;

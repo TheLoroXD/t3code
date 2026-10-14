@@ -6,6 +6,7 @@ import {
   type PreviewAutomationStatus,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -21,6 +22,13 @@ import * as ServerConfig from "../config.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
 import { pageProgram } from "./dom.ts";
+import {
+  apiReadVerified,
+  redactReadText,
+  SlackPageResult,
+  type SlackApiIdentity,
+  type SlackPageRequest,
+} from "./readSchema.ts";
 import {
   Configuration,
   PageObservation,
@@ -122,6 +130,27 @@ const make = Effect.gen(function* () {
     string,
     { identity: string; app: App; id: string; sourceUrl: string; searchUrl: string; query?: string }
   >();
+  const apiTabs = new Map<
+    string,
+    { tabId: PreviewTabId; scope: Invocation.McpThreadInvocationScope }
+  >();
+  const apiReferences = new Map<string, { identity: string; channel: string; threadTs: string }>();
+  const apiCursors = new Map<
+    string,
+    {
+      account: string;
+      identity: string;
+      backend: "api";
+      queryHash: string;
+      expiresAt: number;
+      page?: number;
+      cursor?: string;
+    }
+  >();
+  const putBounded = <A>(map: Map<string, A>, key: string, value: A) => {
+    map.set(key, value);
+    if (map.size > 2000) map.delete(map.keys().next().value!);
+  };
   const hash = (value: unknown) =>
     encodeJson(value).pipe(
       Effect.flatMap((encoded) => crypto.digest("SHA-256", new TextEncoder().encode(encoded))),
@@ -184,6 +213,21 @@ const make = Effect.gen(function* () {
         input.profileId === ".." ||
         profile?.type !== "Directory" ||
         !emailPattern.test(input.accountEmail)
+      )
+        return yield* fail("invalid_configuration");
+      for (const [operation, backend] of Object.entries(input.readBackends ?? {})) {
+        if (backend !== "api") continue;
+        if (!apiReadVerified(input.account, operation))
+          return yield* fail("capability_unavailable");
+        if (!input.slackApi) return yield* fail("invalid_configuration");
+      }
+      if (
+        input.slackApi &&
+        (input.slackApi.workspaceOrigin === "https://app.slack.com" ||
+          (slackId !== input.slackApi.teamId &&
+            slackId !== input.slackApi.enterpriseId &&
+            slack.origin !== input.slackApi.workspaceOrigin) ||
+          (input.slackApi.searchScope === "enterprise" && !input.slackApi.enterpriseId))
       )
         return yield* fail("invalid_configuration");
       return {
@@ -273,6 +317,7 @@ const make = Effect.gen(function* () {
           state: Result["state"],
           observation?: PageObservation,
           operationId?: string,
+          backend: "dom" | "api" = "dom",
         ) =>
           Effect.gen(function* () {
             const episode = state === "auth_required" ? blocked.get(authKey) : undefined;
@@ -316,9 +361,11 @@ const make = Effect.gen(function* () {
               account: configuration.account,
               app,
               profileId: configuration.profileId,
-              browserThreadId: browserScope.thread.threadId,
+              browserThreadId: episode?.threadId ?? browserScope.thread.threadId,
               ...((episode?.tabId ?? tabId) ? { tabId: (episode?.tabId ?? tabId)! } : {}),
               state,
+              backend,
+              ...(backend === "dom" ? { coverage: "rendered" as const } : {}),
               observedAt: DateTime.formatIso(yield* DateTime.now),
               items,
               partial: observation?.more ?? false,
@@ -455,6 +502,360 @@ const make = Effect.gen(function* () {
             else yield* invoke("press", { key: "Enter" });
             return yield* observe("searchRows", { query });
           });
+
+        const apiResume =
+          request.operation === "resume" && app === "slack"
+            ? Array.from(apiTabs.values()).find(
+                (driver) => driver.tabId === blocked.get(authKey)?.tabId,
+              )
+            : undefined;
+        if (apiResume && configuration.slackApi) {
+          const expected = configuration.slackApi;
+          if (expected.environmentId !== scope.environmentId)
+            return yield* new WorkBrowserError({ code: "account_mismatch", backend: "api" });
+          // Explicit resume reuses the held API tab; it must never open or navigate a DOM driver.
+          browserScope = apiResume.scope;
+          tabId = apiResume.tabId;
+          const resumed = yield* Effect.gen(function* () {
+            const status = yield* invoke<PreviewAutomationStatus>("status", {});
+            if (
+              !status.available ||
+              status.control?.owner !== "agent" ||
+              !status.control.ownedByCaller
+            )
+              return yield* fail("browser_busy");
+            yield* invoke("navigate", { url: slackHome(), waitUntil: "domcontentloaded" });
+            const checked = yield* invoke<unknown>("workRead", {
+              operation: "identity",
+              identity: expected,
+            }).pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(SlackPageResult)),
+              Effect.mapError((cause) =>
+                isWorkBrowserError(cause) ? cause : fail("response_incompatible"),
+              ),
+            );
+            if (!checked.ok)
+              return yield* new WorkBrowserError({
+                code: checked.code,
+                backend: "api",
+                httpStatus: checked.status,
+              });
+            blocked.delete(authKey);
+            return true;
+          }).pipe(
+            Effect.catchTags({
+              WorkBrowserError: (error) =>
+                error.code === "auth_required"
+                  ? Effect.succeed(false)
+                  : Effect.fail(
+                      new WorkBrowserError({
+                        code: error.code,
+                        backend: "api",
+                        ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
+                      }),
+                    ),
+            }),
+          );
+          return yield* result(resumed ? "ready" : "auth_required", undefined, undefined, "api");
+        }
+
+        const readOperation =
+          request.operation === "slackSearch" ||
+          request.operation === "slackRead" ||
+          request.operation === "mailSearch" ||
+          request.operation === "mailRead" ||
+          request.operation === "calendar"
+            ? request.operation
+            : undefined;
+        const readBackend = readOperation
+          ? (configuration.readBackends?.[readOperation] ?? "dom")
+          : "dom";
+        if ("cursor" in request && request.cursor && readBackend !== "api")
+          return yield* fail("invalid_cursor");
+        const runApiRead = Effect.gen(function* () {
+          if (
+            !apiReadVerified(configuration.account, request.operation) ||
+            !configuration.slackApi ||
+            (request.operation !== "slackSearch" && request.operation !== "slackRead")
+          )
+            return yield* fail("capability_unavailable");
+          const expected: SlackApiIdentity = configuration.slackApi;
+          if (expected.environmentId !== scope.environmentId)
+            return yield* fail("account_mismatch");
+          const apiIdentity = yield* hash([identity, expected]);
+          const identityLabel = [
+            expected.teamId,
+            expected.userId,
+            expected.enterpriseId ?? "",
+          ].join("/");
+          const reference =
+            request.operation === "slackRead" ? apiReferences.get(request.messageRef) : undefined;
+          if (
+            request.operation === "slackRead" &&
+            (!reference || reference.identity !== apiIdentity)
+          )
+            return yield* fail("invalid_reference");
+          const limit = request.operation === "slackSearch" ? (request.limit ?? 50) : 100;
+          const queryHash = yield* hash(
+            request.operation === "slackSearch"
+              ? [request.operation, request.query, limit, "timestamp:desc"]
+              : [request.operation, reference!.channel, reference!.threadTs],
+          );
+          const continuation = request.cursor ? apiCursors.get(request.cursor) : undefined;
+          const startedAt = yield* Clock.currentTimeMillis;
+          if (
+            request.cursor &&
+            (!continuation ||
+              continuation.account !== configuration.account ||
+              continuation.identity !== apiIdentity ||
+              continuation.backend !== "api" ||
+              continuation.queryHash !== queryHash ||
+              continuation.expiresAt <= startedAt)
+          )
+            return yield* fail("invalid_cursor");
+          if (blocked.has(authKey))
+            return yield* result("auth_required", undefined, undefined, "api");
+
+          const key = `${scope.environmentId}:${apiIdentity}:slack`;
+          let driver = apiTabs.get(key);
+          if (!driver) {
+            const apiScope = {
+              ...driverScope,
+              thread: {
+                ...driverScope.thread,
+                providerSessionId: `work-browser:${apiIdentity}:api:slack`,
+              },
+            };
+            const opened = yield* broker
+              .invoke<PreviewAutomationStatus>({
+                scope: apiScope,
+                operation: "workOpen",
+                input: {
+                  profileId: configuration.profileId,
+                  url: slackHome(),
+                  open: false,
+                  reuseExistingTab: false,
+                },
+              })
+              .pipe(Effect.mapError(() => fail("browser_busy")));
+            if (!opened.tabId) return yield* fail("browser_busy");
+            driver = { scope: apiScope, tabId: PreviewTabId.make(opened.tabId) };
+            apiTabs.set(key, driver);
+          }
+          const readDriver = driver;
+          browserScope = readDriver.scope;
+          tabId = readDriver.tabId;
+          const deadline = startedAt + 25_000;
+          let pages = 0;
+          let retries = 0;
+          const pageRequest = (
+            input: SlackPageRequest,
+          ): Effect.Effect<Extract<SlackPageResult, { ok: true }>, WorkBrowserError> =>
+            Effect.gen(function* () {
+              if ((yield* Clock.currentTimeMillis) + 6000 > deadline)
+                return yield* fail("read_deadline");
+              const status = yield* broker
+                .invoke<PreviewAutomationStatus>({
+                  scope: readDriver.scope,
+                  operation: "status",
+                  tabId: readDriver.tabId,
+                  input: {},
+                })
+                .pipe(Effect.mapError(() => fail("browser_busy")));
+              if (
+                !status.available ||
+                status.control?.owner !== "agent" ||
+                !status.control.ownedByCaller
+              )
+                return yield* fail("browser_busy");
+              const response = yield* broker
+                .invoke<unknown>({
+                  scope: readDriver.scope,
+                  operation: "workRead",
+                  tabId: readDriver.tabId,
+                  input,
+                  timeoutMs: 7000,
+                })
+                .pipe(
+                  Effect.mapError(() => fail("browser_busy")),
+                  Effect.flatMap(Schema.decodeUnknownEffect(SlackPageResult)),
+                  Effect.mapError((cause) =>
+                    isWorkBrowserError(cause) ? cause : fail("response_incompatible"),
+                  ),
+                );
+              if (response.ok) return response;
+              if (
+                response.code === "rate_limited" &&
+                response.retryAfterMs !== undefined &&
+                retries < 2 &&
+                (yield* Clock.currentTimeMillis) + response.retryAfterMs + 6000 <= deadline
+              ) {
+                retries++;
+                yield* Effect.sleep(response.retryAfterMs);
+                if (input.operation !== "identity")
+                  yield* pageRequest({ operation: "identity", identity: expected });
+                return yield* pageRequest(input);
+              }
+              if (response.code === "auth_required") {
+                if (!blocked.has(authKey))
+                  blocked.set(authKey, {
+                    id: yield* crypto.randomUUIDv4.pipe(Effect.mapError(storageError)),
+                    tabId: readDriver.tabId,
+                    threadId: readDriver.scope.thread.threadId,
+                    notified: false,
+                  });
+              }
+              if (
+                response.code === "auth_required" ||
+                response.code === "account_mismatch" ||
+                response.code === "origin_changed"
+              ) {
+                for (const [cursor, value] of apiCursors)
+                  if (value.identity === apiIdentity) apiCursors.delete(cursor);
+                for (const [ref, value] of apiReferences)
+                  if (value.identity === apiIdentity) apiReferences.delete(ref);
+              }
+              return yield* new WorkBrowserError({
+                code: response.code,
+                backend: "api",
+                httpStatus: response.status,
+              });
+            });
+          let nextPage = continuation?.page ?? 1;
+          let upstreamCursor = continuation?.cursor;
+          const items: Array<(typeof Result.Type.items)[number]> = [];
+          const count = request.operation === "slackSearch" ? Math.min(20, limit) : 10;
+          let more = false;
+          let partialContent = false;
+          let bytes = 0;
+          const seen = new Set<string>();
+          for (;;) {
+            // Each upstream identity and data request is a separate bounded page evaluation.
+            yield* pageRequest({ operation: "identity", identity: expected });
+            const page = yield* pageRequest(
+              request.operation === "slackSearch"
+                ? {
+                    operation: "search",
+                    identity: expected,
+                    query: request.query,
+                    page: nextPage,
+                    count,
+                  }
+                : {
+                    operation: "thread",
+                    identity: expected,
+                    channel: reference!.channel,
+                    ts: reference!.threadTs,
+                    count,
+                    ...(upstreamCursor ? { cursor: upstreamCursor } : {}),
+                  },
+            );
+            pages++;
+            if (page.items.length > count || (page.more && page.items.length === 0))
+              return yield* fail("response_incompatible");
+            for (const item of page.items) {
+              if (
+                item.timestamp !== item.id ||
+                item.sourceUrl !==
+                  `${expected.workspaceOrigin}/archives/${item.channel}/p${item.id.replace(".", "")}` ||
+                (item.author !== null && !/^[UW][A-Z0-9]+$/.test(item.author)) ||
+                (request.operation === "slackRead" &&
+                  (item.channel !== reference!.channel || item.threadTs !== reference!.threadTs))
+              )
+                return yield* fail("response_incompatible");
+              const unique = `${item.channel}:${item.id}`;
+              if (seen.has(unique)) return yield* fail("response_incompatible");
+              seen.add(unique);
+              const ref = yield* hash([apiIdentity, "api", item.channel, item.id]);
+              putBounded(apiReferences, ref, {
+                identity: apiIdentity,
+                channel: item.channel,
+                threadTs: item.threadTs,
+              });
+              const normalized = {
+                ref,
+                kind: "message" as const,
+                text: redactReadText(item.text),
+                author: item.author,
+                subject: null,
+                sourceUrl: item.sourceUrl,
+                timestamp: item.timestamp,
+              };
+              bytes += new TextEncoder().encode(
+                yield* encodeJson(normalized).pipe(Effect.mapError(storageError)),
+              ).length;
+              if (bytes > 50_000) return yield* fail("response_too_large");
+              partialContent ||= item.partial || normalized.text !== item.text;
+              items.push(normalized);
+            }
+            more = page.more;
+            if (request.operation === "slackSearch") {
+              if (more && page.nextPage !== nextPage + 1)
+                return yield* fail("response_incompatible");
+              nextPage = page.nextPage ?? nextPage;
+            } else {
+              if (more && (!page.cursor || page.cursor === upstreamCursor))
+                return yield* fail("response_incompatible");
+              upstreamCursor = page.cursor;
+            }
+            if (
+              !more ||
+              pages >= 5 ||
+              items.length + count > limit ||
+              bytes >= 20_000 ||
+              (yield* Clock.currentTimeMillis) + 12_000 > deadline
+            )
+              break;
+          }
+          let cursor: string | undefined;
+          if (more) {
+            cursor = yield* crypto.randomUUIDv4.pipe(Effect.mapError(storageError));
+            putBounded(apiCursors, cursor, {
+              account: configuration.account,
+              identity: apiIdentity,
+              backend: "api",
+              queryHash,
+              expiresAt: (yield* Clock.currentTimeMillis) + 15 * 60_000,
+              ...(request.operation === "slackSearch"
+                ? { page: nextPage }
+                : { cursor: upstreamCursor! }),
+            });
+          }
+          yield* Effect.logDebug("work browser API read", {
+            account: configuration.account,
+            operation: request.operation,
+            backend: "api",
+            pages,
+            durationMs: (yield* Clock.currentTimeMillis) - startedAt,
+          });
+          return {
+            ...(yield* result("ready", undefined, undefined, "api")),
+            backend: "api" as const,
+            items,
+            tabId: readDriver.tabId,
+            browserThreadId: readDriver.scope.thread.threadId,
+            validatedIdentity: identityLabel,
+            coverage:
+              request.operation === "slackSearch" ? expected.searchScope : ("thread" as const),
+            partial: more || partialContent,
+            ...(cursor ? { cursor } : {}),
+          } satisfies Result;
+        }).pipe(
+          Effect.catchTags({
+            WorkBrowserError: (error) => {
+              if (error.code !== "auth_required")
+                return Effect.fail(
+                  new WorkBrowserError({
+                    code: error.code,
+                    backend: "api",
+                    ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
+                  }),
+                );
+              return result("auth_required", undefined, undefined, "api");
+            },
+          }),
+        );
+        if (readBackend === "api") return yield* runApiRead;
 
         const sending = request.operation === "slackSend" || request.operation === "mailSend";
         const fingerprint = sending
