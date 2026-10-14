@@ -50,6 +50,8 @@ const PREVIEW_AUTOMATION_OPERATIONS = [
 
 export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   ...PREVIEW_AUTOMATION_OPERATIONS,
+  "workOpen",
+  "workRead",
   "dialog",
   "close",
   "upload",

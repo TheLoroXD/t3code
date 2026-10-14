@@ -2,6 +2,7 @@
 import { INCOGNITO_BROWSER_PROFILE_ID } from "@t3tools/contracts";
 import { constVoid } from "effect/Function";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeCrypto from "node:crypto";
 import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -85,6 +86,7 @@ export class ServerBrowserContexts {
   private readonly contexts = new Map<string, Promise<BrowserContext>>();
   /** Profile clears in progress; a context for that profile opens after its storage is gone. */
   private readonly clearing = new Map<string, Promise<void>>();
+  private readonly sessionFiles = new WeakMap<BrowserContext, string>();
   private browser: Promise<Browser> | undefined;
   private closing: Promise<void> | undefined;
 
@@ -174,9 +176,27 @@ export class ServerBrowserContexts {
     const options = await this.launchOptions();
     const { chromium } = loadPlaywright();
     await NodeFSP.mkdir(directory, { recursive: true });
-    return this.launch(options, () =>
+    const context = await this.launch(options, () =>
       chromium.launchPersistentContext(directory, { ...options, ...contextOptions }),
     );
+    // Headless Shell drops session cookies on exit even for a persistent profile.
+    const sessionFile = NodePath.join(directory, ".session-cookies.json");
+    try {
+      const saved = await NodeFSP.readFile(sessionFile, "utf8").catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return "[]";
+          throw error;
+        },
+      );
+      const cookies = JSON.parse(saved);
+      if (!Array.isArray(cookies)) throw new Error("Invalid session state");
+      if (cookies.length > 0) await context.addCookies(cookies);
+    } catch {
+      await context.close().catch(constVoid);
+      throw new Error("The browser profile's saved session could not be restored.");
+    }
+    this.sessionFiles.set(context, sessionFile);
+    return context;
   }
 
   private profileDirectory(profileId: string) {
@@ -239,7 +259,29 @@ export class ServerBrowserContexts {
 
   private async dispose() {
     await Promise.allSettled(
-      [...this.contexts.values()].map(async (pending) => (await pending).close()),
+      [...this.contexts.values()].map(async (pending) => {
+        const context = await pending;
+        const sessionFile = this.sessionFiles.get(context);
+        try {
+          if (sessionFile) {
+            const temporary = `${sessionFile}.${NodeCrypto.randomUUID()}.tmp`;
+            try {
+              const cookies = (await context.cookies()).filter((cookie) => cookie.expires === -1);
+              await NodeFSP.writeFile(temporary, JSON.stringify(cookies), {
+                mode: 0o600,
+                flag: "wx",
+              });
+              await NodeFSP.rename(temporary, sessionFile);
+            } catch {
+              await NodeFSP.unlink(sessionFile).catch(constVoid);
+            } finally {
+              await NodeFSP.unlink(temporary).catch(constVoid);
+            }
+          }
+        } finally {
+          await context.close();
+        }
+      }),
     );
     const browser = await this.browser?.catch(() => undefined);
     await browser?.close().catch(constVoid);

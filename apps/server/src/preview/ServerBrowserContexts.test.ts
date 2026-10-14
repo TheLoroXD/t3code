@@ -11,10 +11,21 @@ const launches = vi.hoisted(() => ({
   persistent: vi.fn<BrowserType["launchPersistentContext"]>(),
   mkdir: vi.fn().mockResolvedValue(undefined),
   rm: vi.fn().mockResolvedValue(undefined),
+  readFile: vi.fn().mockRejectedValue({ code: "ENOENT" }),
+  writeFile: vi.fn().mockResolvedValue(undefined),
+  rename: vi.fn().mockResolvedValue(undefined),
+  unlink: vi.fn().mockResolvedValue(undefined),
 }));
 vi.spyOn(chromium, "launch").mockImplementation(launches.launch);
 vi.spyOn(chromium, "launchPersistentContext").mockImplementation(launches.persistent);
-vi.mock("node:fs/promises", () => ({ mkdir: launches.mkdir, rm: launches.rm }));
+vi.mock("node:fs/promises", () => ({
+  mkdir: launches.mkdir,
+  rm: launches.rm,
+  readFile: launches.readFile,
+  writeFile: launches.writeFile,
+  rename: launches.rename,
+  unlink: launches.unlink,
+}));
 
 const makeContext = () => {
   const events = new NodeEvents.EventEmitter();
@@ -22,6 +33,8 @@ const makeContext = () => {
   return {
     on: vi.fn((event: string, listener: () => void) => events.on(event, listener)),
     pages: vi.fn(() => []),
+    cookies: vi.fn().mockResolvedValue([]),
+    addCookies: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(async () => {
       if (!closed) {
         closed = true;
@@ -60,9 +73,61 @@ beforeEach(() => {
   launches.persistent.mockReset();
   launches.mkdir.mockClear();
   launches.rm.mockClear();
+  launches.readFile.mockReset().mockRejectedValue({ code: "ENOENT" });
+  launches.writeFile.mockReset().mockResolvedValue(undefined);
+  launches.rename.mockReset().mockResolvedValue(undefined);
+  launches.unlink.mockReset().mockResolvedValue(undefined);
 });
 
 describe("ServerBrowserContexts", () => {
+  it("privately restores session cookies per profile and never saves isolated storage", async () => {
+    const session = {
+      name: "session",
+      value: "fixture",
+      domain: "work.example",
+      path: "/",
+      expires: -1,
+      secure: true,
+      httpOnly: true,
+      sameSite: "Lax",
+    };
+    const first = makeContext();
+    first.cookies.mockResolvedValue([
+      session,
+      { ...session, name: "persistent", expires: 2_000_000_000 },
+    ]);
+    launches.persistent.mockResolvedValue(first as unknown as BrowserContext);
+    launches.launch.mockResolvedValue(makeBrowser() as unknown as Browser);
+    const pool = new ServerBrowserContexts(options());
+    await pool.contextFor("work/team");
+    await pool.contextFor(INCOGNITO_BROWSER_PROFILE_ID);
+    await pool.close();
+    expect(launches.writeFile).toHaveBeenCalledExactlyOnceWith(
+      expect.stringMatching(/^\/test\/profiles\/work%2Fteam\/\.session-cookies\.json\..+\.tmp$/),
+      JSON.stringify([session]),
+      { mode: 0o600, flag: "wx" },
+    );
+    expect(launches.rename).toHaveBeenCalledWith(
+      expect.any(String),
+      "/test/profiles/work%2Fteam/.session-cookies.json",
+    );
+    const restored = makeContext();
+    const other = makeContext();
+    launches.persistent
+      .mockResolvedValueOnce(restored as unknown as BrowserContext)
+      .mockResolvedValueOnce(other as unknown as BrowserContext);
+    launches.readFile.mockImplementation(async (path) =>
+      path === "/test/profiles/work%2Fteam/.session-cookies.json"
+        ? JSON.stringify([session])
+        : "[]",
+    );
+    const restarted = new ServerBrowserContexts(options());
+    await restarted.contextFor("work/team");
+    expect(restored.addCookies).toHaveBeenCalledWith([session]);
+    await restarted.contextFor("another-profile");
+    expect(other.addCookies).not.toHaveBeenCalled();
+    await restarted.close();
+  });
   it("lazily shares one browser across concurrent isolated sessions and reuses each context", async () => {
     const browser = makeBrowser();
     const launch = Promise.withResolvers<Browser>();

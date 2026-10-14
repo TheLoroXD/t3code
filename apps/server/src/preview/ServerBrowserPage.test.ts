@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Playwright fixtures run outside the Effect runtime.
 import {
   chromium,
   type Browser,
@@ -6,8 +7,12 @@ import {
   type Page,
 } from "playwright-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import { presentAsChrome } from "./ServerBrowserContexts.ts";
+import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
 describe("server browser element refs", () => {
@@ -17,7 +22,7 @@ describe("server browser element refs", () => {
   let cdp: CDPSession;
 
   beforeAll(async () => {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ headless: true, args: ["--enable-automation"] });
   });
   afterAll(async () => {
     await browser?.close();
@@ -56,6 +61,63 @@ describe("server browser element refs", () => {
     return locator!;
   };
   const repeatedRows = `<ul>${Array.from({ length: 5 }, (_, i) => `<li>row ${i + 1}<button data-testid="delete-row" onclick="this.parentElement.remove()">delete</button></li>`).join("")}</ul>`;
+
+  it("keeps session cookies through a headless restart and preserves an explicit logout", async () => {
+    const command = await cdp.send("Browser.getBrowserCommandLine");
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-session-profile-"));
+    const create = () =>
+      new ServerBrowserContexts({
+        profilesDir: directory,
+        executable: async () => command.arguments[0]!,
+        env: { ...process.env, T3CODE_SERVER_BROWSER_SANDBOX: "0" },
+      });
+    let pool = create();
+    try {
+      let profile = await pool.contextFor("work");
+      await profile.addCookies([
+        { url: "https://work-browser.test/", name: "session_fixture", value: "fixture-only" },
+      ]);
+      await pool.close();
+      if (HostProcess.Platform.defaultValue() !== "win32")
+        expect(
+          (await NodeFSP.stat(NodePath.join(directory, "work", ".session-cookies.json"))).mode &
+            0o777,
+        ).toBe(0o600);
+      pool = create();
+      profile = await pool.contextFor("work");
+      expect((await profile.cookies()).some((cookie) => cookie.name === "session_fixture")).toBe(
+        true,
+      );
+      await profile.clearCookies();
+      await pool.close();
+      pool = create();
+      profile = await pool.contextFor("work");
+      expect((await profile.cookies()).some((cookie) => cookie.name === "session_fixture")).toBe(
+        false,
+      );
+    } finally {
+      await pool.close();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts password values while preserving editable refs and ordinary input values", async () => {
+    await page.setContent(
+      '<label>Username<input value="visible-user"></label><label>Password<input type="password" value="fake-secret]suffix"></label>',
+    );
+    const result = await takeSnapshot();
+    const tree = String(result.accessibilityTree);
+    expect(tree).not.toContain("fake-secret");
+    expect(tree).not.toContain("suffix");
+    expect(tree).toContain("visible-user");
+    const line = tree.split("\n").find((line) => line.includes('textbox "Password"'))!;
+    await ServerBrowserPage.type(page, {
+      locator: locators(line)[0]!,
+      text: "replacement",
+      clear: true,
+    });
+    expect(await page.locator('input[type="password"]').inputValue()).toBe("replacement");
+  });
 
   it("clicks the fifth repeated delete control without touching row one", async () => {
     await page.setContent(repeatedRows);

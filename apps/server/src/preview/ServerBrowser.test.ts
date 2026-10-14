@@ -29,6 +29,8 @@ import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
+import { slackPageRead } from "../workBrowser/SlackPageApi.ts";
+import type { SlackPageResult } from "../workBrowser/readSchema.ts";
 
 // Keep the manager, broker, ownership, refs, and viewer paths real; replace Chromium I/O only.
 vi.mock("./ServerBrowserContexts.ts", () => ({
@@ -1535,8 +1537,105 @@ it.live(
           reason:
             'No browser profile is named "Personal". Use one of: Default (id default), Incognito (id incognito), Work (id profile-work).',
         });
+        const shared = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "workOpen",
+          input: { profileId: "profile-saved-work", reuseExistingTab: false, open: false },
+        });
+        const saved = yield* manager.list({ threadId: scope.thread.threadId });
+        expect(saved.sessions.find((session) => session.tabId === shared.tabId)?.profileId).toBe(
+          "profile-saved-work",
+        );
+        expect(contextRequests.at(-1)).toEqual({
+          profileId: "profile-saved-work",
+          isolated: false,
+        });
       }),
     ).pipe(Effect.provide(layer)),
+);
+
+it.live("shared work tabs retain the server profile when a desktop offers to render them", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* ready;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      desktopRendersNext = true;
+      yield* broker.invoke<PreviewAutomationStatus>({
+        scope: asSession("work-browser:account"),
+        operation: "workOpen",
+        input: { profileId: "profile-saved-work", reuseExistingTab: false, open: false },
+      });
+      expect(desktopConnections).toHaveLength(0);
+      expect(contextRequests.at(-1)).toEqual({ profileId: "profile-saved-work", isolated: false });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("registered work reads pass data to a fixed function and respect tab ownership", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* ready;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const opened = yield* broker.invoke<PreviewAutomationStatus>({
+        scope: asSession("work-browser:api"),
+        operation: "workOpen",
+        input: { profileId: "profile-saved-work", reuseExistingTab: false, open: false },
+      });
+      const page = contexts.at(-1)!.page;
+      page.evaluate.mockResolvedValueOnce({
+        ok: true,
+        items: [],
+        more: false,
+      } as unknown as Awaited<ReturnType<typeof page.evaluate>>);
+      const input = {
+        operation: "identity",
+        identity: {
+          environmentId: scope.environmentId,
+          teamId: "TWORK",
+          userId: "UWORK",
+          enterpriseId: "EWORK",
+          workspaceOrigin: "https://work.slack.com",
+          searchScope: "enterprise",
+        },
+      };
+      expect(
+        yield* broker.invoke({
+          scope: asSession("work-browser:api"),
+          operation: "workRead",
+          tabId: opened.tabId!,
+          input,
+        }),
+      ).toEqual({ ok: true, items: [], more: false });
+      expect(page.evaluate.mock.calls.at(-1)).toEqual([slackPageRead, input]);
+      const calls = page.evaluate.mock.calls.length;
+      const rejected = yield* broker
+        .invoke<SlackPageResult>({
+          scope: asSession("other-agent"),
+          operation: "workRead",
+          tabId: opened.tabId!,
+          input,
+        })
+        .pipe(Effect.flip);
+      expect(rejected).toMatchObject({ reason: "agentMismatch" });
+      expect(page.evaluate.mock.calls).toHaveLength(calls);
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const viewer = yield* browser.attachViewer(
+        viewerInput(PreviewTabId.make(opened.tabId!), true),
+      );
+      yield* viewer.input({ type: "takeControl" });
+      const human = yield* broker
+        .invoke<SlackPageResult>({
+          scope: asSession("work-browser:api"),
+          operation: "workRead",
+          tabId: opened.tabId!,
+          input,
+        })
+        .pipe(Effect.flip);
+      expect(human).toMatchObject({ reason: "humanControl" });
+      expect(page.evaluate.mock.calls).toHaveLength(calls);
+      yield* viewer.input({ type: "releaseControl" });
+    }),
+  ).pipe(Effect.provide(layer)),
 );
 
 it.live("an agent tab keeps throwaway storage when no client reported profiles", () =>

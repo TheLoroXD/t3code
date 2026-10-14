@@ -1,0 +1,105 @@
+# Slack and Outlook in a persistent work browser
+
+T3 agents can search and read Slack and Microsoft 365 mail, send plain text,
+and inspect the Outlook day view through the browser UI. Each work account
+uses one existing persistent profile. All its agents share one queued tab per
+app, preserving both saved logins and Outlook's tab-local state.
+
+This feature requires a T3 build containing the work-browser tools. Updating to
+a build without them removes the tools; use a build that includes the feature
+when upgrading. The first
+version needs its controls checked against your organization's current Slack
+and Outlook pages before relying on it. If a control, sender, destination, date,
+or time zone cannot be verified, the tool fails instead of guessing.
+
+1. Open each work account in its own T3 browser profile on the server that will
+   run the agents. Complete SSO manually. Obtain its profile ID from
+   `preview_status`. An existing Edge profile on another machine is a separate
+   session and is not imported.
+2. Call `work_browser_configure` once for each account. Supply an account name,
+   its persistent `profileId`, `slackUrl` containing the workspace name
+   (for example `verato`) or URL, and that account's Microsoft 365 email.
+   `outlookUrl` is optional and defaults to `https://outlook.office.com/mail/`.
+   Slack follows its normal workspace and SSO redirects, then remembers the
+   resulting workspace ID. Later pages must match that ID, including after a
+   server restart. One profile cannot serve two work accounts.
+3. Every subsequent tool call selects `account` explicitly. For example:
+
+   ```json
+   { "account": "verato", "query": "in:engineering release", "limit": 20 }
+   ```
+
+`work_slack_search` and `work_outlook_search` return references for
+`work_slack_read` and `work_outlook_read`. References are bound to the configured
+account and expire when the server restarts or old references are evicted.
+Search again to refresh them. Results include their source, observation time,
+and `partial`; rendered or truncated results are not a complete export.
+Opening Outlook mail can mark it read. Composing can autosave a draft.
+Slack sends and DOM message reads use channel URLs. The API read backend also
+supports references to direct-message conversations available to the session.
+`browserThreadId` identifies the thread containing the shared work tab. Use
+the work tools for agent actions; the human can open that thread to inspect it.
+
+When authentication expires, tools return `auth_required`. The first response
+has `notify: true`; later calls stay on hold without opening tabs or retrying
+login. `authThreadId` identifies the thread containing the login tab. Complete
+SSO there and release browser control, then call `work_browser_resume` with
+the account and app. Login holds are held in memory; after a server restart the
+first request checks the app again. Company SSO expiration still applies.
+
+Send tools require an `operationId` that stays the same across retries of one
+authorized send. The server records intent before clicking Send. `confirmed`
+means the web UI showed a new Slack message or a fresh Outlook sent notification
+with the composer closed. `send_unknown` means the result is ambiguous; inspect
+the app manually. Repeating the operation returns its receipt without clicking
+again. Do not use a different ID to retry an ambiguous send. Different content
+with the same ID is rejected. Receipts contain hashes and status metadata;
+message bodies and credentials are not stored in them.
+
+For Outlook sends, enable **Always show From** in Settings → Mail → Compose.
+The tool checks that sender and each resolved recipient's contact-card address
+before clicking Send. It stops if an address cannot be checked, a recipient
+changes, or the draft contains additional Cc or Bcc recipients.
+
+The calendar tool reads one visible day and requires an ISO date and an IANA
+time zone. It verifies the display zone in calendar settings and uses the date
+picker, checking the rendered day before returning event labels. This initial
+version supports the Mexico City and UTC display labels and at most 24 month
+steps; it fails for other zones or dates it cannot select. It reports partial
+labels and fails if those cannot be checked. This
+version does not create meetings, handle attachments, or export whole accounts.
+
+Work-account configuration and send receipts live in the server's
+`userdata/work-browser` directory with private permissions. Browser cookies
+remain in T3's existing profile storage. These tools are exposed through T3's
+MCP to its thread agents.
+
+Reads use DOM by default. A maintainer can select `readBackends.slackSearch`
+and `readBackends.slackRead` as `api` for an account that passed capability
+validation. This build has verified those two operations for `verato`.
+API configuration also requires `slackApi` with the expected environment,
+workspace, user, Enterprise identity when applicable, workspace origin and
+search scope. It uses the existing browser session; credentials stay in the
+page. API tabs are separate from the DOM driver and a human takeover returns
+`browser_busy`.
+
+API results add `backend`, `validatedIdentity`, `coverage`, and an optional
+opaque `cursor`. `partial` also covers truncated or unrepresented message
+content. Continue a search with the same account, query, limit and cursor;
+continue a thread with the same reference and cursor. A long thread starts
+with its newest replies; each result is in ascending order and its continuation
+returns older replies. Reads return at most
+100 items, use at most five data pages, and bound each request and response.
+Continuations expire after 15 minutes or a server restart. API failures return
+typed errors without changing backend. To return to DOM, select `dom` for
+that operation and start a new search to obtain fresh references.
+
+Outlook mail and calendar have not passed API validation in this build. The
+observed MSAL cache was encrypted, including after one normal reload of the
+agent's own tab. Those operations remain on their existing DOM route; their
+API configuration is rejected. This capability result does not certify the
+DOM mailbox or calendar tools. Onecall also remains pending account and
+identity configuration.
+
+The generic browser tools retain their existing access to profiles and page
+execution. The credential guarantee applies to these registered read adapters.
