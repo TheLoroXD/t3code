@@ -86,7 +86,9 @@ page. API tabs are separate from the DOM driver and a human takeover returns
 API results add `backend`, `validatedIdentity`, `coverage`, and an optional
 opaque `cursor`. `partial` also covers truncated or unrepresented message
 content. Continue a search with the same account, query, limit and cursor;
-continue a thread with the same reference and cursor. Reads return at most
+continue a thread with the same reference and cursor. A long thread starts
+with its newest replies; each result is in ascending order and its continuation
+returns older replies. Reads return at most
 100 items, use at most five data pages, and bound each request and response.
 Continuations expire after 15 minutes or a server restart. API failures return
 typed errors without changing backend. To return to DOM, select `dom` for

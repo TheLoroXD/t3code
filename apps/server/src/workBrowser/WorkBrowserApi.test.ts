@@ -65,6 +65,11 @@ const item = (page: number, text = "Synthetic message") => ({
   timestamp: `179193972${page}.315089`,
   partial: false,
 });
+const inThread = (message: ReturnType<typeof item>, rootTs: string) => ({
+  ...message,
+  threadTs: rootTs,
+  sourceUrl: message.id === rootTs ? message.sourceUrl : `${message.sourceUrl}?thread_ts=${rootTs}`,
+});
 type Harness = {
   requests: Broker.PreviewAutomationInvokeInput[];
   unavailable: boolean;
@@ -595,7 +600,7 @@ it.live("reads paginated thread replies without merging unrelated roots", () =>
             ? { ok: true, items: [], more: false }
             : {
                 ok: true,
-                items: [{ ...item(input.cursor ? 2 : 1), threadTs: item(1).id }],
+                items: [inThread(item(input.cursor ? 2 : 1), item(1).id)],
                 more: !input.cursor,
                 ...(!input.cursor ? { cursor: "fixture-page-2" } : {}),
               },
@@ -623,6 +628,84 @@ it.live("reads paginated thread replies without merging unrelated roots", () =>
         service.run({ operation: "slackRead", account: "verato", messageRef: first.items[0]!.ref }),
         "response_incompatible",
       );
+    }),
+  ),
+);
+
+it.live("orders newest-first replies pages and continues with older replies", () =>
+  withService((service, fixture) =>
+    Effect.gen(function* () {
+      // Shape observed from conversations.replies: every page repeats the root, pages run
+      // newest to oldest and each page is ascending.
+      const rootTs = "1791921504.084689";
+      const message = (ts: string) => ({ ...item(1), id: ts, timestamp: ts, sourceUrl: "" });
+      const root = inThread(
+        {
+          ...message(rootTs),
+          sourceUrl: "https://work.slack.com/archives/CGENERAL/p1791921504084689",
+        },
+        rootTs,
+      );
+      const reply = (index: number) => {
+        const ts = `${1791921600 + index}.000100`;
+        return inThread(
+          {
+            ...message(ts),
+            sourceUrl: `https://work.slack.com/archives/CGENERAL/p${ts.replace(".", "")}`,
+          },
+          rootTs,
+        );
+      };
+      const pages: Record<string, { items: ReturnType<typeof reply>[]; next?: string }> = {
+        start: { items: [root, reply(9), reply(10)], next: "c1" },
+        c1: { items: [root, reply(7), reply(8)], next: "c2" },
+        c2: { items: [reply(5), reply(6)], next: "c3" },
+        c3: { items: [reply(3), reply(4)], next: "c4" },
+        c4: { items: [reply(1), reply(2)], next: "c5" },
+        c5: { items: [reply(0)] },
+      };
+      fixture.respond = (input) =>
+        Effect.succeed(
+          input.operation === "identity"
+            ? { ok: true, items: [], more: false }
+            : input.operation === "search"
+              ? { ok: true, items: [reply(4)], more: false }
+              : (() => {
+                  const page = pages[input.cursor ?? "start"]!;
+                  return {
+                    ok: true as const,
+                    items: page.items,
+                    more: page.next !== undefined,
+                    ...(page.next ? { cursor: page.next } : {}),
+                  };
+                })(),
+        );
+      const found = yield* service.run(searchRequest);
+      const first = yield* service.run({
+        operation: "slackRead",
+        account: "verato",
+        messageRef: found.items[0]!.ref,
+      });
+      const ascending = [rootTs, ...Array.from({ length: 10 }, (_, i) => reply(i + 1).id)];
+      expect(first.items.map((entry) => entry.timestamp)).toEqual(ascending);
+      expect(first.items[1]!.sourceUrl).toBe(reply(1).sourceUrl);
+      expect(first).toMatchObject({ partial: true, coverage: "thread" });
+      expect(first.cursor).toBeDefined();
+      const rest = yield* service.run({
+        operation: "slackRead",
+        account: "verato",
+        messageRef: found.items[0]!.ref,
+        cursor: first.cursor!,
+      });
+      expect(rest.items.map((entry) => entry.timestamp)).toEqual([reply(0).id]);
+      expect(rest.partial).toBe(false);
+      const all = [...first.items, ...rest.items].map((entry) => entry.ref);
+      expect(new Set(all).size).toBe(12);
+      expect(
+        apiInputs(fixture)
+          .filter((r) => r.operation === "thread")
+          .map((r) => r.cursor),
+      ).toEqual([undefined, "c1", "c2", "c3", "c4", "c5"]);
     }),
   ),
 );

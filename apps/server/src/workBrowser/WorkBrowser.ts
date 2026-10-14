@@ -70,6 +70,15 @@ const decodePage = Schema.decodeUnknownEffect(PageObservation);
 const isWorkBrowserError = Schema.is(WorkBrowserError);
 const fail = (code: WorkBrowserError["code"]) => new WorkBrowserError({ code });
 const storageError = (cause: unknown) => new WorkBrowserError({ code: "storage_failed", cause });
+/** Orders Slack `seconds.micros` timestamps numerically. */
+const compareSlackTs = (left: string, right: string) => {
+  const [leftSeconds = "", leftMicros = ""] = left.split(".");
+  const [rightSeconds = "", rightMicros = ""] = right.split(".");
+  return (
+    Number(leftSeconds) - Number(rightSeconds) ||
+    Number(leftMicros.padEnd(6, "0")) - Number(rightMicros.padEnd(6, "0"))
+  );
+};
 const emailPattern = /^[\w.+-]+@[\w.-]+\.[a-z]{2,}$/i;
 const slackNamePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 const reservedSlackNames = new Set(["app", "accounts", "api", "www", "status"]);
@@ -751,20 +760,31 @@ const make = Effect.gen(function* () {
                   },
             );
             pages++;
-            if (page.items.length > count || (page.more && page.items.length === 0))
+            // A thread page may carry the root in addition to `count` replies.
+            if (
+              page.items.length > (request.operation === "slackRead" ? count + 1 : count) ||
+              (page.more && page.items.length === 0)
+            )
               return yield* fail("response_incompatible");
             for (const item of page.items) {
+              const permalink = `${expected.workspaceOrigin}/archives/${item.channel}/p${item.id.replace(".", "")}`;
               if (
                 item.timestamp !== item.id ||
                 item.sourceUrl !==
-                  `${expected.workspaceOrigin}/archives/${item.channel}/p${item.id.replace(".", "")}` ||
+                  (item.threadTs === item.id
+                    ? permalink
+                    : `${permalink}?thread_ts=${item.threadTs}`) ||
                 (item.author !== null && !/^[UW][A-Z0-9]+$/.test(item.author)) ||
                 (request.operation === "slackRead" &&
                   (item.channel !== reference!.channel || item.threadTs !== reference!.threadTs))
               )
                 return yield* fail("response_incompatible");
               const unique = `${item.channel}:${item.id}`;
-              if (seen.has(unique)) return yield* fail("response_incompatible");
+              if (seen.has(unique)) {
+                // Slack repeats the thread root on every replies page.
+                if (request.operation === "slackRead" && item.id === reference!.threadTs) continue;
+                return yield* fail("response_incompatible");
+              }
               seen.add(unique);
               const ref = yield* hash([apiIdentity, "api", item.channel, item.id]);
               putBounded(apiReferences, ref, {
@@ -807,6 +827,12 @@ const make = Effect.gen(function* () {
             )
               break;
           }
+          // Replies pages arrive newest first, each ascending, so one response is sorted
+          // here and a continuation returns older replies.
+          if (request.operation === "slackRead")
+            items.sort((left, right) =>
+              compareSlackTs(left.timestamp ?? "", right.timestamp ?? ""),
+            );
           let cursor: string | undefined;
           if (more) {
             cursor = yield* crypto.randomUUIDv4.pipe(Effect.mapError(storageError));

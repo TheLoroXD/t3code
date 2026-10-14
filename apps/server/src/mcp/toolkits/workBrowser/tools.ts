@@ -69,7 +69,7 @@ export const WorkBrowserToolkit = Toolkit.make(
     parameters: ReadInput,
     success: Result,
     description:
-      "Read a Slack message reference from work_slack_search. DOM reads its visible message; a validated API backend reads its bounded thread. Pass a returned cursor with the same reference to continue the API thread. References belong to one account, identity and backend and expire on restart." +
+      "Read a Slack message reference from work_slack_search. DOM reads its visible message; a validated API backend reads its bounded thread, newest replies first, and returns each response in ascending order. Pass a returned cursor with the same reference to continue with older replies. References belong to one account, identity and backend and expire on restart." +
       description,
   }).annotate(Tool.Destructive, false),
   Tool.make("work_slack_send", {

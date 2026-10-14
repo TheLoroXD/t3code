@@ -186,7 +186,8 @@ export async function slackPageRead(input: SlackPageRequest): Promise<SlackPageR
     }
     const messages = record(data.messages);
     const rows = input.operation === "search" ? messages?.matches : data.messages;
-    if (!Array.isArray(rows) || rows.length > count)
+    // conversations.replies returns the root on every page in addition to `limit` replies.
+    if (!Array.isArray(rows) || rows.length > (input.operation === "thread" ? count + 1 : count))
       return error("response_incompatible", response.status);
     const items: Extract<SlackPageResult, { ok: true }>["items"][number][] = [];
     for (const value of rows) {
@@ -194,14 +195,24 @@ export async function slackPageRead(input: SlackPageRequest): Promise<SlackPageR
       if (!row) return error("response_incompatible", response.status);
       const ts = string(row.ts),
         channel = input.operation === "search" ? string(record(row.channel)?.id) : input.channel;
-      const threadTs = string(row.thread_ts) ?? (input.operation === "thread" ? input.ts : ts);
+      if (!ts || !/^\d{10,16}\.\d{1,6}$/.test(ts) || !channel || !/^[CDG][A-Z0-9]+$/.test(channel))
+        return error("response_incompatible", response.status);
+      const permalink = `${expected.workspaceOrigin}/archives/${channel}/p${ts.replace(".", "")}`;
+      // Search permalinks of thread replies carry only `?thread_ts=<root>`; their rows may omit thread_ts.
+      let linkedThreadTs: string | undefined;
+      if (input.operation === "search" && row.permalink !== permalink) {
+        const link = string(row.permalink) ?? "";
+        const prefix = `${permalink}?thread_ts=`;
+        linkedThreadTs = link.startsWith(prefix) ? link.slice(prefix.length) : undefined;
+        if (!linkedThreadTs || !/^\d{10,16}\.\d{1,6}$/.test(linkedThreadTs))
+          return error("account_mismatch", response.status);
+      }
+      const threadTs =
+        string(row.thread_ts) ?? linkedThreadTs ?? (input.operation === "thread" ? input.ts : ts);
       if (
-        !ts ||
-        !/^\d{10,16}\.\d{1,6}$/.test(ts) ||
-        !channel ||
-        !/^[CDG][A-Z0-9]+$/.test(channel) ||
         !threadTs ||
-        !/^\d{10,16}\.\d{1,6}$/.test(threadTs)
+        !/^\d{10,16}\.\d{1,6}$/.test(threadTs) ||
+        (linkedThreadTs !== undefined && threadTs !== linkedThreadTs)
       )
         return error("response_incompatible", response.status);
       if (
@@ -212,13 +223,12 @@ export async function slackPageRead(input: SlackPageRequest): Promise<SlackPageR
         return error("account_mismatch", response.status);
       if (input.operation === "thread" && threadTs !== input.ts)
         return error("account_mismatch", response.status);
+      // Continuation pages repeat the root; only the first page reports it.
+      if (input.operation === "thread" && input.cursor && ts === input.ts) continue;
       const text = string(row.text);
       const author = string(row.user);
       if (text === undefined || (author !== undefined && !/^[UW][A-Z0-9]+$/.test(author)))
         return error("response_incompatible", response.status);
-      const permalink = `${expected.workspaceOrigin}/archives/${channel}/p${ts.replace(".", "")}`;
-      if (input.operation === "search" && row.permalink !== permalink)
-        return error("account_mismatch", response.status);
       const maxText = input.operation === "search" ? 1000 : 2000;
       const clean = text
         .replace(/\bxox[a-z]-[A-Za-z0-9-]+/g, "[redacted]")
@@ -233,7 +243,7 @@ export async function slackPageRead(input: SlackPageRequest): Promise<SlackPageR
         threadTs,
         text: boundedText,
         author: author ?? null,
-        sourceUrl: permalink,
+        sourceUrl: threadTs === ts ? permalink : `${permalink}?thread_ts=${threadTs}`,
         timestamp: ts,
         partial: boundedText !== text || text.length === 0,
       });

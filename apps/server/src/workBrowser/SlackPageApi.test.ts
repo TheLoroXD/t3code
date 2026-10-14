@@ -259,6 +259,95 @@ describe("registered Slack page reads", () => {
       (await run(input, { response: Response.json({ ...response, response_metadata: {} }) })).value,
     ).toMatchObject({ code: "response_incompatible" });
   });
+  it("accepts search permalinks of thread replies and derives their thread from the link", async () => {
+    const root = "1791921504.084689";
+    const link = `${row.permalink}?thread_ts=${root}`;
+    const reply = Response.json({
+      ...search,
+      messages: { ...search.messages, matches: [{ ...row, permalink: link }] },
+    });
+    const { value } = await run({}, { response: reply });
+    expect(value).toMatchObject({ ok: true, items: [{ threadTs: root, sourceUrl: link }] });
+    for (const permalink of [
+      `${link}&cid=CGENERAL`,
+      `${row.permalink}?thread_ts=not-a-ts`,
+      `${row.permalink}?cid=CGENERAL`,
+      `https://other.slack.com/archives/CGENERAL/p1791939726315089?thread_ts=${root}`,
+    ])
+      expect(
+        (
+          await run(
+            {},
+            {
+              response: Response.json({
+                ...search,
+                messages: { ...search.messages, matches: [{ ...row, permalink }] },
+              }),
+            },
+          )
+        ).value,
+      ).toMatchObject({ ok: false, code: "account_mismatch" });
+    expect(
+      (
+        await run(
+          {},
+          {
+            response: Response.json({
+              ...search,
+              messages: {
+                ...search.messages,
+                matches: [{ ...row, permalink: link, thread_ts: "1791921999.000001" }],
+              },
+            }),
+          },
+        )
+      ).value,
+    ).toMatchObject({ ok: false, code: "response_incompatible" });
+  });
+  it("accepts the root beside `limit` replies and drops it from continuation pages", async () => {
+    const root = { ...row, channel: undefined, ts: "1791921504.084689" };
+    const reply = (n: number) => ({
+      ...row,
+      channel: undefined,
+      ts: `17919216${String(n).padStart(2, "0")}.000100`,
+      thread_ts: root.ts,
+    });
+    const input = { operation: "thread" as const, channel: "CGENERAL", ts: root.ts, count: 2 };
+    const page = (messages: unknown[]) =>
+      Response.json({
+        ok: true,
+        messages,
+        has_more: true,
+        response_metadata: { next_cursor: "next-fixture" },
+      });
+    const first = await run(input, { response: page([root, reply(9), reply(10)]) });
+    expect(first.value).toMatchObject({ ok: true, more: true });
+    if (first.value.ok) {
+      expect(first.value.items.map((item) => item.id)).toEqual([
+        root.ts,
+        reply(9).ts,
+        reply(10).ts,
+      ]);
+      expect(first.value.items[0]!.sourceUrl).toBe(
+        "https://work.slack.com/archives/CGENERAL/p1791921504084689",
+      );
+      expect(first.value.items[1]!.sourceUrl).toBe(
+        `https://work.slack.com/archives/CGENERAL/p1791921609000100?thread_ts=${root.ts}`,
+      );
+    }
+    const next = await run(
+      { ...input, cursor: "previous-fixture" },
+      { response: page([root, reply(7), reply(8)]) },
+    );
+    expect(next.requests[0]!.params.get("cursor")).toBe("previous-fixture");
+    expect(next.requests[0]!.params.get("oldest")).toBeNull();
+    if (next.value.ok)
+      expect(next.value.items.map((item) => item.id)).toEqual([reply(7).ts, reply(8).ts]);
+    else expect.unreachable();
+    expect(
+      (await run(input, { response: page([root, reply(8), reply(9), reply(10)]) })).value,
+    ).toMatchObject({ code: "response_incompatible" });
+  });
   it("redacts synthetic credentials and marks truncated or unrepresented content partial", async () => {
     const response = Response.json({
       ...search,
